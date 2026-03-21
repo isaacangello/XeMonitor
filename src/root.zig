@@ -1,5 +1,7 @@
 //! By convention, root.zig is the root source file when making a library.
 const std = @import("std");
+const zig_serial = @import("serial");
+const builtin = @import("builtin");
 
 pub fn bufferedPrint() !void {
     // Stdout is for the actual output of your application, for example if you
