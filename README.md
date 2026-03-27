@@ -21,6 +21,9 @@ O executável:
   - Windows: `powershell` + `System.Windows.Forms.SendKeys`
   - Linux Wayland: `ydotool`
   - Linux X11: `xdotool`
+- Ícone de bandeja (opcional):
+  - Linux: `yad`
+  - Windows: `powershell` (já presente por padrão)
 
 ## Estrutura do projeto
 
@@ -46,6 +49,12 @@ O programa escolhe o injetor automaticamente:
 - Windows -> PowerShell SendKeys
 - Linux com `XDG_SESSION_TYPE=wayland` -> `ydotool`
 - Linux (outros casos) -> `xdotool`
+
+Tray icon durante execução:
+
+- Linux: se `yad` estiver instalado, cria ícone na bandeja.
+- Windows: cria ícone na bandeja usando `System.Windows.Forms.NotifyIcon` via PowerShell.
+- Outros sistemas: não cria ícone (apenas warning no log).
 
 ## Testes
 
@@ -95,6 +104,16 @@ Verifique se o dispositivo está conectado e ajuste a porta em `src/main.zig`.
 - Wayland: confirme se `ydotool` está instalado e funcional.
 - X11: confirme `xdotool`.
 - Verifique permissões do usuário para acesso à serial (`/dev/ttyUSB0`).
+
+### Sem ícone de bandeja no Linux
+
+- Instale `yad` (ex.: Debian/Ubuntu: `sudo apt install yad`).
+- O app continua funcionando sem o ícone; ele apenas emite um warning no log.
+
+### Sem ícone de bandeja no Windows
+
+- Verifique se `powershell` está disponível no PATH.
+- O app continua funcionando sem o ícone; ele apenas emite um warning no log.
 
 ## Próximas melhorias recomendadas
 

@@ -3,6 +3,81 @@ const xemonitor = @import("xemonitor");
 const zig_serial = @import("serial");
 const builtin = @import("builtin");
 
+fn commandSucceeded(argv: []const []const u8) bool {
+    var child = std.process.Child.init(argv, std.heap.page_allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+
+    const term = child.spawnAndWait() catch return false;
+    return switch (term) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
+const TrayIcon = struct {
+    child: ?std.process.Child = null,
+
+    fn start(self: *TrayIcon) !void {
+        switch (builtin.os.tag) {
+            .linux => {
+                if (!commandSucceeded(&.{ "which", "yad" })) {
+                    std.debug.print("[warn] tray icon disabled: install 'yad' to enable tray support on Linux.\n", .{});
+                    return;
+                }
+
+                var child = std.process.Child.init(&.{
+                    "yad",
+                    "--notification",
+                    "--image=input-keyboard",
+                    "--text=XeMonitor running",
+                }, std.heap.page_allocator);
+                child.stdin_behavior = .Ignore;
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+
+                try child.spawn();
+                self.child = child;
+                std.debug.print("[info] tray icon enabled (linux/yad).\n", .{});
+            },
+            .windows => {
+                if (!commandSucceeded(&.{ "powershell", "-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()" })) {
+                    std.debug.print("[warn] tray icon disabled: 'powershell' not found.\n", .{});
+                    return;
+                }
+
+                var child = std.process.Child.init(&.{
+                    "powershell",
+                    "-NoProfile",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Application; $n.Text = 'XeMonitor running'; $n.Visible = $true; while ($true) { Start-Sleep -Seconds 3600 }",
+                }, std.heap.page_allocator);
+                child.stdin_behavior = .Ignore;
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+
+                try child.spawn();
+                self.child = child;
+                std.debug.print("[info] tray icon enabled (windows/powershell).\n", .{});
+            },
+            else => {
+                std.debug.print("[warn] tray icon disabled: unsupported OS '{s}'.\n", .{@tagName(builtin.os.tag)});
+            },
+        }
+    }
+
+    fn stop(self: *TrayIcon) void {
+        if (self.child) |*child| {
+            _ = child.kill() catch {};
+            _ = child.wait() catch {};
+            self.child = null;
+        }
+    }
+};
+
 fn runCommand(argv: []const []const u8) !void {
     var child = std.process.Child.init(argv, std.heap.page_allocator);
     child.stdin_behavior = .Ignore;
@@ -119,6 +194,10 @@ pub fn main() !u8 {
             .linux_x11_xdotool => "xdotool",
         },
     });
+
+    var tray = TrayIcon{};
+    try tray.start();
+    defer tray.stop();
 
     var serial = std.fs.cwd().openFile(port_name, .{ .mode = .read_write }) catch |err| switch (err) {
         error.FileNotFound => {
