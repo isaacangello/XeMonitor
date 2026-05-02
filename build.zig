@@ -1,5 +1,49 @@
 const std = @import("std");
 
+fn pathExists(path: []const u8) bool {
+    std.fs.cwd().access(path, .{}) catch return false;
+    return true;
+}
+
+fn configureWindowsLibserialport(b: *std.Build, exe: *std.Build.Step.Compile) void {
+    const candidate_roots = [_][]const u8{
+        "C:\\msys64\\ucrt64",
+        "C:\\msys64\\mingw64",
+        "C:\\msys64\\clang64",
+    };
+
+    var configured = false;
+    for (candidate_roots) |root| {
+        const include_file = std.fmt.allocPrint(b.allocator, "{s}\\include\\libserialport.h", .{root}) catch continue;
+        defer b.allocator.free(include_file);
+        if (!pathExists(include_file)) continue;
+
+        const lib_dir = std.fmt.allocPrint(b.allocator, "{s}\\lib", .{root}) catch continue;
+        defer b.allocator.free(lib_dir);
+        const import_lib = std.fmt.allocPrint(b.allocator, "{s}\\lib\\serialport.lib", .{root}) catch continue;
+        defer b.allocator.free(import_lib);
+        const dll_a = std.fmt.allocPrint(b.allocator, "{s}\\lib\\libserialport.dll.a", .{root}) catch continue;
+        defer b.allocator.free(dll_a);
+
+        if (!pathExists(import_lib) and !pathExists(dll_a)) continue;
+
+        const include_dir = std.fmt.allocPrint(b.allocator, "{s}\\include", .{root}) catch continue;
+        defer b.allocator.free(include_dir);
+        exe.addIncludePath(.{ .cwd_relative = include_dir });
+        exe.addLibraryPath(.{ .cwd_relative = lib_dir });
+        std.log.info("libserialport configured from '{s}'", .{root});
+        configured = true;
+        break;
+    }
+
+    if (!configured) {
+        std.log.warn("libserialport not found in default MSYS2 paths. Install it or set include/lib paths manually.", .{});
+    }
+
+    exe.linkLibC();
+    exe.linkSystemLibrary("serialport");
+}
+
 // Although this function looks imperative, it does not perform the build
 // directly and instead it mutates the build graph (`b`) that will be then
 // executed by an external runner. The functions in `std.Build` implement a DSL
@@ -87,6 +131,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    if (target.result.os.tag == .windows) {
+        configureWindowsLibserialport(b, exe);
+    }
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

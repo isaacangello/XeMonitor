@@ -6,11 +6,12 @@ Aplicação em Zig para ler dados de um dispositivo serial (ex.: scanner, Leitor
 
 O executável:
 
-1. Abre uma porta serial fixa (`COM1` no Windows ou `/dev/ttyUSB0` no Linux).
-2. Configura a serial em `115200 8N1` sem handshake.
+1. Seleciona a porta serial automaticamente (detecta scanners Honeywell/Xenon) ou via CLI/ambiente.
+2. Configura a serial em `115200 8N1` sem handshake (configurável via `XEMONITOR_BAUD`).
 3. Lê bytes continuamente até encontrar fim de linha (`\r` ou `\n`).
 4. Normaliza payloads que chegam com separador intercalado `'3'` (ex.: `132333` -> `1233`).
 5. Injeta o texto no sistema e em seguida envia `Enter`.
+6. Reconecta automaticamente em caso de desconexão da porta serial.
 
 ## Stack e dependências
 
@@ -44,6 +45,28 @@ zig build
 zig build run
 ```
 
+Ou após compilar:
+
+```bash
+./zig-out/bin/xemonitor [--port <PORT>]
+```
+
+Exemplos:
+
+```bash
+./zig-out/bin/xemonitor --port COM4
+./zig-out/bin/xemonitor COM4
+```
+
+O programa escolhe a porta nesta ordem:
+
+1. Argumento de linha de comando (`--port` ou direto)
+2. Variável de ambiente `XEMONITOR_PORT`
+3. Detecção automática (procura scanners Honeywell/Xenon)
+4. Padrão: `COM1` (Windows) ou `/dev/ttyUSB0` (Linux)
+
+O baud rate pode ser configurado via variável de ambiente `XEMONITOR_BAUD` (padrão: `115200`).
+
 O programa escolhe o injetor automaticamente:
 
 - Windows -> PowerShell SendKeys
@@ -62,28 +85,31 @@ Tray icon durante execução:
 zig build test
 ```
 
-## Configuração atual no código
+## Configuração
 
-Atualmente os valores estão fixos em `src/main.zig`:
+A porta serial e baud rate podem ser definidos de três formas:
 
-- Porta serial:
-  - Windows: `"\\\\.\\COM1"`
-  - Linux: `"/dev/ttyUSB0"`
-- Serial config:
-  - Baud rate: `115200`
-  - Word size: `8`
-  - Parity: `none`
-  - Stop bits: `one`
-  - Handshake: `none`
+- **Argumento CLI**: `xemonitor --port COM4` ou `xemonitor COM4`
+- **Variável de ambiente**: `XEMONITOR_PORT=COM4` e `XEMONITOR_BAUD=9600`
+- **Auto-detecção**: o programa procura dispositivos Honeywell/Xenon conectados
+
+Valores padrão (quando não detectado):
+
+- Porta serial: `COM1` (Windows) ou `/dev/ttyUSB0` (Linux)
+- Baud rate: `115200`
+- Configuração serial: 8N1, sem handshake
 
 ## Logs esperados
 
 Ao iniciar, você verá algo como:
 
-- `the serial port '...' selected .`
+- `serial port 'COM4' selected (source=cli).`
+- `serial baud rate=115200`
 - `platform=..., keyboard injector=...`
 
 Durante leitura, cada byte recebido é impresso no console.
+
+Se a porta não for encontrada, o programa tenta reconectar a cada 2 segundos.
 
 ## Troubleshooting
 
@@ -95,9 +121,15 @@ O módulo `serial` precisa estar importado no `build.zig` dentro do `root_module
 
 Mensagem típica:
 
-- `Invalid config: the serial port '...' does not exist.`
+- `[warn] serial port '...' (source=...) not found. retrying selection every 2s...`
 
-Verifique se o dispositivo está conectado e ajuste a porta em `src/main.zig`.
+O programa tentará reconectar automaticamente. Se necessário, especifique a porta:
+
+```bash
+./zig-out/bin/xemonitor --port COM3
+# ou
+export XEMONITOR_PORT=COM3
+```
 
 ### Sem injeção de teclado no Linux
 
@@ -114,10 +146,3 @@ Verifique se o dispositivo está conectado e ajuste a porta em `src/main.zig`.
 
 - Verifique se `powershell` está disponível no PATH.
 - O app continua funcionando sem o ícone; ele apenas emite um warning no log.
-
-## Próximas melhorias recomendadas
-
-- Tornar porta serial e baud rate configuráveis por argumentos/variáveis de ambiente.
-- Tratar reconexão automática da serial em caso de desconexão.
-- Adicionar testes unitários para a função de normalização (`stripInterleavedSeparator`).
-- Expor modo `dry-run` para debug sem injeção real de teclado.
