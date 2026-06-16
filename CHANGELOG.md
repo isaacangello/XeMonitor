@@ -29,3 +29,8 @@
 - `setup_wsl.sh` — WSL2 udev rule for CH340
 - `test_com4.ps1` — PowerShell COM4 connectivity test
 - `src/bridge.py` — Python bridge alternative (stdlib-only)
+- `setup_usb.bat` — automated USB setup via usbipd (admin auto-elevation)
+
+### Changed
+- `setup_wsl.sh` — now also configures wsl.conf for kernel modules (usbip-core, vhci-hcd) and passwordless sudo for modprobe
+- `run_bridge.bat` — checks USB availability, offers to run setup_usb.bat automatically, compiles bridge if needed
