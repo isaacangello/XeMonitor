@@ -156,6 +156,7 @@ const CliOptions = struct {
     tcp_addr: ?[]u8 = null,
     use_stdin: bool = false,
     no_tray: bool = false,
+    kill_existing: bool = false,
 };
 
 fn printUsage() void {
@@ -168,6 +169,7 @@ fn printUsage() void {
         \\  xemonitor --tcp <HOST:PORT>  (read from TCP instead of serial)
         \\  xemonitor --stdin           (read from stdin)
         \\  xemonitor --no-tray         (disable system tray icon)
+        \\  xemonitor --kill            (terminate a running instance)
         \\
         \\Examples:
         \\  xemonitor --port COM4
@@ -217,6 +219,11 @@ fn parseCliOptions(allocator: std.mem.Allocator) !CliOptions {
 
         if (std.mem.eql(u8, arg, "--no-tray")) {
             options.no_tray = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--kill")) {
+            options.kill_existing = true;
             continue;
         }
 
@@ -811,6 +818,29 @@ pub fn main() !u8 {
         .linux_wayland_ydotool
     else
         .linux_x11_xdotool;
+
+    if (cli.kill_existing) {
+        if (builtin.os.tag == .windows) {
+            logPrint("[info] killing running xemonitor instances...\n", .{});
+            var child = std.process.Child.init(&.{ "taskkill", "/F", "/IM", "xemonitor.exe" }, std.heap.page_allocator);
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            child.spawn() catch |err| {
+                logPrint("[warn] taskkill failed: {}\n", .{err});
+            };
+        } else {
+            logPrint("[info] killing running xemonitor instances...\n", .{});
+            var child = std.process.Child.init(&.{ "pkill", "-9", "xemonitor" }, std.heap.page_allocator);
+            child.stdin_behavior = .Ignore;
+            child.stdout_behavior = .Ignore;
+            child.stderr_behavior = .Ignore;
+            child.spawn() catch |err| {
+                logPrint("[warn] pkill failed: {}\n", .{err});
+            };
+        }
+        return 0;
+    }
 
     if (winapi_available) {
         const mutex = w.CreateMutexA(null, 1, "Global\\XeMonitor");
