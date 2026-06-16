@@ -155,6 +155,7 @@ const CliOptions = struct {
     use_winapi: bool = false,
     tcp_addr: ?[]u8 = null,
     use_stdin: bool = false,
+    no_tray: bool = false,
 };
 
 fn printUsage() void {
@@ -166,6 +167,7 @@ fn printUsage() void {
         \\  xemonitor --winapi      (use native Win32 serial API on Windows)
         \\  xemonitor --tcp <HOST:PORT>  (read from TCP instead of serial)
         \\  xemonitor --stdin           (read from stdin)
+        \\  xemonitor --no-tray         (disable system tray icon)
         \\
         \\Examples:
         \\  xemonitor --port COM4
@@ -210,6 +212,11 @@ fn parseCliOptions(allocator: std.mem.Allocator) !CliOptions {
 
         if (std.mem.eql(u8, arg, "--stdin")) {
             options.use_stdin = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--no-tray")) {
+            options.no_tray = true;
             continue;
         }
 
@@ -547,7 +554,6 @@ const SerialConnection = union(enum) {
                 return byte[0];
             },
             .std_in => {
-                var byte: [1]u8 = undefined;
                 var stdin_buf: [1]u8 = undefined;
                 const read_len = try std.fs.File.stdin().read(&stdin_buf);
                 if (read_len == 0) return error.EndOfStream;
@@ -831,8 +837,10 @@ pub fn main() !u8 {
     });
 
     var tray = TrayIcon{};
-    try tray.start();
-    defer tray.stop();
+    if (!cli.no_tray) {
+        try tray.start();
+    }
+    defer if (!cli.no_tray) tray.stop();
 
     var did_report_missing_port = false;
     var last_selected_port: ?[]u8 = null;
