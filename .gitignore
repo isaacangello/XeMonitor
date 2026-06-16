@@ -1,0 +1,17 @@
+# Build output
+zig-out/
+
+# Zig cache
+.zig-cache/
+
+# Runtime logs
+*.log
+stderr.txt
+stdout.txt
+
+# Temp
+tmp/
+
+# OS
+.DS_Store
+Thumbs.db

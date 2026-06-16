@@ -1,4 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const testing = std.testing;
+
 const c = @cImport({
     @cDefine("_GNU_SOURCE", "1");
     @cInclude("fcntl.h");
@@ -305,4 +308,92 @@ pub fn main() !u8 {
     }
 
     return 0;
+}
+
+// ---- Tests ----
+
+test "SharedState: update and get" {
+    var state = SharedState{};
+    const data = "1234567890";
+    state.update(data);
+
+    var buf: [256]u8 = undefined;
+    const result = state.get(&buf);
+    try testing.expect(result != null);
+    try testing.expectEqualStrings(data, result.?);
+}
+
+test "SharedState: readNew detects changes" {
+    var state = SharedState{};
+    var prev: [256]u8 = undefined;
+    var prev_len: usize = 0;
+
+    state.update("first");
+    const r1 = state.readNew(&prev, &prev_len);
+    try testing.expect(r1 != null);
+    try testing.expectEqualStrings("first", r1.?);
+
+    const r2 = state.readNew(&prev, &prev_len);
+    try testing.expect(r2 == null);
+
+    state.update("second");
+    const r3 = state.readNew(&prev, &prev_len);
+    try testing.expect(r3 != null);
+    try testing.expectEqualStrings("second", r3.?);
+}
+
+test "SharedState: readNew after same data returns null" {
+    var state = SharedState{};
+    state.update("abc");
+    _ = state.readNew(&.{}, &.{0});
+    state.update("abc");
+    var prev: [256]u8 = undefined;
+    var prev_len: usize = 0;
+    const r = state.readNew(&prev, &prev_len);
+    try testing.expect(r == null);
+}
+
+test "SharedState: empty state get returns null" {
+    var state = SharedState{};
+    var buf: [256]u8 = undefined;
+    const r = state.get(&buf);
+    try testing.expect(r == null);
+}
+
+test "SharedState: update overwrites old data" {
+    var state = SharedState{};
+    state.update("old");
+    state.update("new");
+    var buf: [256]u8 = undefined;
+    const r = state.get(&buf);
+    try testing.expectEqualStrings("new", r.?);
+}
+
+test "parseHttpPath: simple GET" {
+    const req = "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
+    const path = parseHttpPath(req);
+    try testing.expectEqualStrings("/", path.?);
+}
+
+test "parseHttpPath: with path" {
+    const req = "GET /stream HTTP/1.1\r\n\r\n";
+    const path = parseHttpPath(req);
+    try testing.expectEqualStrings("/stream", path.?);
+}
+
+test "parseHttpPath: with query string" {
+    const req = "GET /latest?ts=123 HTTP/1.1\r\n\r\n";
+    const path = parseHttpPath(req);
+    try testing.expectEqualStrings("/latest?ts=123", path.?);
+}
+
+test "parseHttpPath: invalid request" {
+    try testing.expect(parseHttpPath("not-http") == null);
+    try testing.expect(parseHttpPath("") == null);
+}
+
+test "parseHttpPath: POST request" {
+    const req = "POST /data HTTP/1.1\r\nContent-Length: 0\r\n\r\n";
+    const path = parseHttpPath(req);
+    try testing.expectEqualStrings("/data", path.?);
 }

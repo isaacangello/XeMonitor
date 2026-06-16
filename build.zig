@@ -155,6 +155,15 @@ pub fn build(b: *std.Build) void {
     const bridge_step = b.step("bridge", "Build the Linux/WSL2 bridge");
     bridge_step.dependOn(&bridge_install.step);
 
+    // Bridge tests (only compiles/runs on Linux due to C headers)
+    const bridge_tests = b.addTest(.{
+        .root_module = bridge.root_module,
+        .filters = if (b.args) |a| a else &.{},
+    });
+    const run_bridge_tests = b.addRunArtifact(bridge_tests);
+    const test_bridge_step = b.step("test-bridge", "Run bridge tests (Linux only)");
+    test_bridge_step.dependOn(&run_bridge_tests.step);
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.

@@ -33,7 +33,7 @@
     // internet connectivity.
     .dependencies = .{
         .serial = .{
-            .url = "https://github.com/ZigEmbeddedGroup/serial/archive/refs/heads/master.zip",
+            .url = "https://github.com/ZigEmbeddedGroup/serial/archive/e89a24c.zip",
             .hash = "serial-0.0.1-PoeRzF60AAAN8Iu0yXTIX-t3DVzsnmN7vWHKM2HA2Zbq",
         },
     },
