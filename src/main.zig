@@ -69,6 +69,10 @@ const w = if (winapi_available) struct {
         hObject: windows.HANDLE,
     ) callconv(.winapi) windows.BOOL;
 
+    extern "kernel32" fn GetProcessId(
+        Process: windows.HANDLE,
+    ) callconv(.winapi) windows.DWORD;
+
     extern "kernel32" fn GetCommState(
         hFile: windows.HANDLE,
         lpDCB: *DCB,
@@ -301,6 +305,16 @@ const TrayIcon = struct {
 
                 try child.spawn();
                 self.child = child;
+
+                if (std.fs.cwd().createFile("xemonitor_tray.pid", .{})) |pid_file| {
+                    var buf: [32]u8 = undefined;
+                    const pid = w.GetProcessId(child.id);
+                    const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
+                    _ = pid_file.write(pid_str) catch {};
+                    pid_file.close();
+                } else |err| {
+                    logPrint("[warn] could not write tray PID file: {}\n", .{err});
+                }
                 logPrint("[info] tray icon enabled (windows/powershell).\n", .{});
             },
             else => {
@@ -315,6 +329,7 @@ const TrayIcon = struct {
             _ = child.wait() catch {};
             self.child = null;
         }
+        std.fs.cwd().deleteFile("xemonitor_tray.pid") catch {};
     }
 };
 
@@ -821,7 +836,22 @@ pub fn main() !u8 {
 
     if (cli.kill_existing) {
         if (builtin.os.tag == .windows) {
-            logPrint("[info] killing running xemonitor instances...\n", .{});
+            if (std.fs.cwd().readFileAlloc(std.heap.page_allocator, "xemonitor_tray.pid", 32)) |pid_str| {
+                defer std.heap.page_allocator.free(pid_str);
+                const pid = std.fmt.parseInt(u32, std.mem.trim(u8, pid_str, " \t\r\n"), 10) catch 0;
+                if (pid > 0) {
+                    logPrint("[info] killing tray icon PID {d}...\n", .{pid});
+                    var buf: [32]u8 = undefined;
+                    const pid_arg = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
+                    var child = std.process.Child.init(&.{ "taskkill", "/F", "/PID", pid_arg }, std.heap.page_allocator);
+                    child.stdin_behavior = .Ignore;
+                    child.stdout_behavior = .Ignore;
+                    child.stderr_behavior = .Ignore;
+                    child.spawn() catch {};
+                }
+                std.fs.cwd().deleteFile("xemonitor_tray.pid") catch {};
+            } else |_| {}
+            logPrint("[info] killing xemonitor.exe...\n", .{});
             var child = std.process.Child.init(&.{ "taskkill", "/F", "/IM", "xemonitor.exe" }, std.heap.page_allocator);
             child.stdin_behavior = .Ignore;
             child.stdout_behavior = .Ignore;
