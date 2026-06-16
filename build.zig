@@ -141,6 +141,20 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
+    // ---- Bridge executable (Linux/WSL2) ----
+    const bridge = b.addExecutable(.{
+        .name = "bridge",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bridge.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
+            .optimize = optimize,
+        }),
+    });
+    bridge.linkLibC();
+    const bridge_install = b.addInstallArtifact(bridge, .{});
+    const bridge_step = b.step("bridge", "Build the Linux/WSL2 bridge");
+    bridge_step.dependOn(&bridge_install.step);
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.
