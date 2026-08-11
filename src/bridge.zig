@@ -20,6 +20,7 @@ const SharedState = struct {
     mutex: std.Thread.Mutex = .{},
     code: [CODE_MAX]u8 = undefined,
     code_len: usize = 0,
+    seq: u64 = 0,
 
     fn update(self: *SharedState, data: []const u8) void {
         self.mutex.lock();
@@ -27,6 +28,24 @@ const SharedState = struct {
         const n = @min(data.len, CODE_MAX);
         @memcpy(self.code[0..n], data[0..n]);
         self.code_len = n;
+        self.seq +%= 1;
+    }
+
+    fn currentSeq(self: *SharedState) u64 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        return self.seq;
+    }
+
+    fn readSince(self: *SharedState, buf: []u8, last_seq: *u64) ?[]const u8 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        if (self.code_len == 0) return null;
+        if (self.seq == last_seq.*) return null;
+        const n = @min(self.code_len, buf.len);
+        @memcpy(buf[0..n], self.code[0..n]);
+        last_seq.* = self.seq;
+        return buf[0..n];
     }
 
     fn get(self: *SharedState, buf: []u8) ?[]const u8 {
@@ -109,46 +128,70 @@ fn openSerial() c_int {
 }
 
 fn serialReaderTask(state: *SharedState) void {
-    const fd = openSerial();
-    if (fd < 0) return;
-    defer _ = c.close(fd);
-
-    var buf: [4096]u8 = undefined;
     while (true) {
-        const n = c.read(fd, &buf, buf.len);
-        if (n <= 0) {
-            std.debug.print("[bridge] serial read error or end of stream\n", .{});
-            break;
+        const fd = openSerial();
+        if (fd < 0) {
+            std.debug.print("[bridge] serial unavailable, retrying in 2s...\n", .{});
+            std.Thread.sleep(2 * std.time.ns_per_s);
+            continue;
         }
-        state.update(buf[0..@as(usize, @intCast(n))]);
+
+        var buf: [4096]u8 = undefined;
+        var failed = false;
+        while (true) {
+            const n = c.read(fd, &buf, buf.len);
+            if (n <= 0) {
+                std.debug.print("[bridge] serial read error or end of stream\n", .{});
+                failed = true;
+                break;
+            }
+            state.update(buf[0..@as(usize, @intCast(n))]);
+        }
+        _ = c.close(fd);
+        if (failed) std.Thread.sleep(500 * std.time.ns_per_ms);
     }
 }
 
 // ---- raw TCP mode (default) ----
 
-fn runTcpMode() !void {
-    const fd = openSerial();
-    if (fd < 0) return error.SerialOpenFailed;
-    defer _ = c.close(fd);
+fn handleTcpConnection(conn: std.net.Stream, state: *SharedState) void {
+    defer conn.close();
 
+    var last_seq: u64 = state.currentSeq();
+    var buf: [CODE_MAX]u8 = undefined;
+
+    while (true) {
+        if (state.readSince(&buf, &last_seq)) |data| {
+            if (c.write(conn.handle, data.ptr, data.len) < 0) break;
+        }
+        std.Thread.sleep(20 * std.time.ns_per_ms);
+    }
+}
+
+fn runTcpMode() !void {
     std.debug.print("[bridge] starting TCP server on 0.0.0.0:{d}...\n", .{TCP_PORT});
     const address = try std.net.Address.parseIp("0.0.0.0", TCP_PORT);
     var server = try std.net.Address.listen(address, .{ .reuse_address = true });
     defer server.deinit();
 
-    std.debug.print("[bridge] waiting for connection...\n", .{});
-    const conn = try server.accept();
-    defer conn.stream.close();
-    std.debug.print("[bridge] connected!\n", .{});
+    var state = SharedState{};
+    const reader_thread = try std.Thread.spawn(.{}, serialReaderTask, .{&state});
+    reader_thread.detach();
 
-    var buf: [4096]u8 = undefined;
     while (true) {
-        const n = c.read(fd, &buf, buf.len);
-        if (n <= 0) {
-            std.debug.print("[bridge] end of serial stream\n", .{});
-            break;
-        }
-        _ = c.write(conn.stream.handle, &buf, @as(usize, @intCast(n)));
+        const conn = server.accept() catch |err| {
+            std.debug.print("[bridge] accept error: {}\n", .{err});
+            std.Thread.sleep(std.time.ns_per_s);
+            continue;
+        };
+        std.debug.print("[bridge] client connected\n", .{});
+
+        const thread = std.Thread.spawn(.{}, handleTcpConnection, .{ conn.stream, &state }) catch |err| {
+            std.debug.print("[bridge] failed to spawn handler: {}\n", .{err});
+            conn.stream.close();
+            continue;
+        };
+        thread.detach();
     }
 }
 
@@ -345,10 +388,10 @@ test "SharedState: readNew detects changes" {
 test "SharedState: readNew after same data returns null" {
     var state = SharedState{};
     state.update("abc");
-    _ = state.readNew(&.{}, &.{0});
-    state.update("abc");
     var prev: [256]u8 = undefined;
     var prev_len: usize = 0;
+    _ = state.readNew(&prev, &prev_len);
+    state.update("abc");
     const r = state.readNew(&prev, &prev_len);
     try testing.expect(r == null);
 }
@@ -367,6 +410,41 @@ test "SharedState: update overwrites old data" {
     var buf: [256]u8 = undefined;
     const r = state.get(&buf);
     try testing.expectEqualStrings("new", r.?);
+}
+
+test "SharedState: readSince starts from current seq" {
+    var state = SharedState{};
+    state.update("before-connect");
+    var last_seq: u64 = state.currentSeq();
+
+    var buf: [256]u8 = undefined;
+    try testing.expect(state.readSince(&buf, &last_seq) == null);
+
+    state.update("after-connect");
+    const r = state.readSince(&buf, &last_seq);
+    try testing.expect(r != null);
+    try testing.expectEqualStrings("after-connect", r.?);
+}
+
+test "SharedState: readSince delivers identical repeated data" {
+    var state = SharedState{};
+    var last_seq: u64 = state.currentSeq();
+
+    var buf: [256]u8 = undefined;
+    state.update("1111");
+    try testing.expectEqualStrings("1111", state.readSince(&buf, &last_seq).?);
+
+    state.update("1111");
+    const r = state.readSince(&buf, &last_seq);
+    try testing.expect(r != null);
+    try testing.expectEqualStrings("1111", r.?);
+}
+
+test "SharedState: readSince with empty state returns null" {
+    var state = SharedState{};
+    var last_seq: u64 = state.currentSeq();
+    var buf: [256]u8 = undefined;
+    try testing.expect(state.readSince(&buf, &last_seq) == null);
 }
 
 test "parseHttpPath: simple GET" {
