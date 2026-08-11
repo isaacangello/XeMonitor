@@ -12,6 +12,14 @@ stdout.txt
 # Temp
 tmp/
 
+# IDE
+.idea/
+
+# Dependências / downloads manuais
+zig-pkg/
+2706121.pdf
+serial.zip
+
 # OS
 .DS_Store
 Thumbs.db
