@@ -17,19 +17,24 @@ echo ==========================================
 echo.
 
 :: ------- Verifica usbipd -------
+set "USBIPD=usbipd"
 where usbipd >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERRO] usbipd nao encontrado.
-    echo        Instale com: winget install usbipd
-    pause
-    exit /b 1
+    if exist "C:\Program Files\usbipd-win\usbipd.exe" (
+        set "USBIPD=C:\Program Files\usbipd-win\usbipd.exe"
+    ) else (
+        echo [ERRO] usbipd nao encontrado.
+        echo        Instale com: winget install usbipd
+        pause
+        exit /b 1
+    )
 )
-echo [OK] usbipd encontrado.
+echo [OK] usbipd encontrado (%USBIPD%).
 
 :: ------- Remove binding persistente antigo (COM4) -------
 echo.
 echo [1/4] Removendo binding persistente antigo...
-usbipd unbind -g "21402a02-b0bf-4121-9134-359bbe6ab18a" >nul 2>&1
+"%USBIPD%" unbind -g "21402a02-b0bf-4121-9134-359bbe6ab18a" >nul 2>&1
 if %errorlevel% equ 0 (
     echo        Binding antigo removido.
 ) else (
@@ -39,7 +44,7 @@ if %errorlevel% equ 0 (
 :: ------- Bind CH340 por hardware ID -------
 echo.
 echo [2/4] Compartilhando CH340 (1a86:7523)...
-usbipd bind --hardware-id 1a86:7523
+"%USBIPD%" bind --hardware-id 1a86:7523
 if %errorlevel% neq 0 (
     echo [ERRO] Falha ao compartilhar CH340.
     echo        Tente manualmente: usbipd bind --hardware-id 1a86:7523
@@ -51,13 +56,13 @@ echo        OK - CH340 compartilhado (Ready for attach).
 :: ------- Attach ao WSL -------
 echo.
 echo [3/4] Attachando CH340 ao WSL (Arch)...
-usbipd attach -w Arch --hardware-id 1a86:7523
+"%USBIPD%" attach -w Arch --hardware-id 1a86:7523
 if %errorlevel% neq 0 (
     echo.
     echo [AVISO] Falha no attach. Tentando com shutdown do WSL...
     wsl --shutdown
     timeout /t 5 /nobreak >nul
-    usbipd attach -w Arch --hardware-id 1a86:7523
+    "%USBIPD%" attach -w Arch --hardware-id 1a86:7523
     if %errorlevel% neq 0 (
         echo [ERRO] Continua falhando.
         echo        Verifique:

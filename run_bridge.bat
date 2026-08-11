@@ -20,14 +20,8 @@ if %errorlevel% neq 0 (
 :: 1. Verifica se /dev/ttyUSB0 existe no WSL
 wsl test -c /dev/ttyUSB0 2>nul
 if %errorlevel% neq 0 (
-    echo [AVISO] /dev/ttyUSB0 nao encontrado no WSL.
+    echo [AVISO] /dev/ttyUSB0 nao encontrado. Executando setup USB...
     echo.
-    echo        Deseja executar o setup automatico do USB?
-    echo        (vai pedir privilegios de administrador para usbipd)
-    echo.
-    choice /C SN /M "Executar setup_usb.bat? (S)im / (N)ao"
-    if errorlevel 2 goto skip_usb_setup
-
     call setup_usb.bat
     if %errorlevel% neq 0 (
         echo [ERRO] Setup USB falhou. Resolva e tente novamente.
@@ -35,7 +29,6 @@ if %errorlevel% neq 0 (
         exit /b 1
     )
 
-    :: Verifica novamente
     wsl test -c /dev/ttyUSB0 2>nul
     if %errorlevel% neq 0 (
         echo [ERRO] /dev/ttyUSB0 continua indisponivel apos setup.
@@ -43,8 +36,6 @@ if %errorlevel% neq 0 (
         exit /b 1
     )
 )
-
-:skip_usb_setup
 
 :: 2. Verifica permissao de leitura
 wsl test -r /dev/ttyUSB0 2>nul
@@ -55,13 +46,7 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-:: 3. Mata bridge anterior se houver
-wsl pkill -f bridge 2>nul
-
-:: 4. Determina o caminho do bridge
-set BRIDGE_PATH=%CD:\=/%/zig-out/bin/bridge
-
-:: 5. Verifica se o binario existe
+:: 3. Garante o binario do bridge compilado
 if not exist "zig-out\bin\bridge" (
     echo [INFO] Compilando bridge para Linux...
     zig build bridge
@@ -72,29 +57,39 @@ if not exist "zig-out\bin\bridge" (
     )
 )
 
-echo [1/3] Iniciando bridge serial-TCP no WSL2...
-echo        Binario: %BRIDGE_PATH%
-echo        Modo: raw TCP (porta 9000)
-echo.
-
-start "Bridge WSL2" cmd /c "wsl %BRIDGE_PATH%"
-
-echo        Aguardando 3s para o bridge iniciar...
-ping -n 4 127.0.0.1 >nul
-
-:: 6. Verifica se o bridge esta rodando
-wsl pgrep -f "^bridge$" >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [OK] Bridge rodando no WSL2.
-) else (
-    echo [AVISO] Bridge pode nao ter iniciado.
+:: 4. Instala o servico systemd (se necessario) e inicia
+echo [1/3] Verificando servico systemd 'xemonitor-bridge'...
+wsl systemctl is-active xemonitor-bridge >nul 2>&1
+if %errorlevel% neq 0 (
+    wsl systemctl is-enabled xemonitor-bridge >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo [INFO] Instalando servico systemd (copia para /usr/local/bin)...
+        wsl bash scripts/install_bridge_service.sh
+        if !errorlevel! neq 0 (
+            echo [ERRO] Falha ao instalar o servico do bridge.
+            pause
+            exit /b 1
+        )
+    )
+    echo [INFO] Iniciando servico 'xemonitor-bridge'...
+    wsl systemctl start xemonitor-bridge
+    if !errorlevel! neq 0 (
+        echo [AVISO] O servico pode estar aguardando /dev/ttyUSB0 (start-pre).
+    )
 )
 
-:: 7. Inicia o xemonitor no Windows
+wsl systemctl is-active xemonitor-bridge >nul 2>&1
+if %errorlevel% equ 0 (
+    echo [OK] Bridge rodando no WSL2 (systemd).
+) else (
+    echo [AVISO] Bridge pode nao ter iniciado (servico ativando/aguardando).
+)
+
+:: 5. Inicia o xemonitor no Windows
 echo [2/3] Iniciando xemonitor (TCP bridge)...
 start "XeMonitor" cmd /c "zig-out\bin\xemonitor.exe --tcp 127.0.0.1:9000"
 
-:: 8. Abre o Bloco de Notas
+:: 6. Abre o Bloco de Notas
 echo [3/3] Abrindo Bloco de Notas para teste...
 start notepad.exe
 
