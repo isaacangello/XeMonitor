@@ -1,8 +1,7 @@
 const std = @import("std");
 
-fn pathExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
-    return true;
+fn pathExists(b: *std.Build, path: []const u8) bool {
+    return !std.meta.isError(std.Io.Dir.cwd().access(b.graph.io, path, .{}));
 }
 
 fn configureWindowsLibserialport(b: *std.Build, exe: *std.Build.Step.Compile) void {
@@ -16,7 +15,7 @@ fn configureWindowsLibserialport(b: *std.Build, exe: *std.Build.Step.Compile) vo
     for (candidate_roots) |root| {
         const include_file = std.fmt.allocPrint(b.allocator, "{s}\\include\\libserialport.h", .{root}) catch continue;
         defer b.allocator.free(include_file);
-        if (!pathExists(include_file)) continue;
+        if (!pathExists(b, include_file)) continue;
 
         const lib_dir = std.fmt.allocPrint(b.allocator, "{s}\\lib", .{root}) catch continue;
         defer b.allocator.free(lib_dir);
@@ -25,12 +24,12 @@ fn configureWindowsLibserialport(b: *std.Build, exe: *std.Build.Step.Compile) vo
         const dll_a = std.fmt.allocPrint(b.allocator, "{s}\\lib\\libserialport.dll.a", .{root}) catch continue;
         defer b.allocator.free(dll_a);
 
-        if (!pathExists(import_lib) and !pathExists(dll_a)) continue;
+        if (!pathExists(b, import_lib) and !pathExists(b, dll_a)) continue;
 
         const include_dir = std.fmt.allocPrint(b.allocator, "{s}\\include", .{root}) catch continue;
         defer b.allocator.free(include_dir);
-        exe.addIncludePath(.{ .cwd_relative = include_dir });
-        exe.addLibraryPath(.{ .cwd_relative = lib_dir });
+        exe.root_module.addIncludePath(.{ .cwd_relative = include_dir });
+        exe.root_module.addLibraryPath(.{ .cwd_relative = lib_dir });
         std.log.info("libserialport configured from '{s}'", .{root});
         configured = true;
         break;
@@ -40,8 +39,8 @@ fn configureWindowsLibserialport(b: *std.Build, exe: *std.Build.Step.Compile) vo
         std.log.warn("libserialport not found in default MSYS2 paths. Install it or set include/lib paths manually.", .{});
     }
 
-    exe.linkLibC();
-    exe.linkSystemLibrary("serialport");
+    exe.root_module.link_libc = true;
+    exe.root_module.linkSystemLibrary("serialport", .{});
 }
 
 // Although this function looks imperative, it does not perform the build
@@ -148,9 +147,9 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/bridge.zig"),
             .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
             .optimize = optimize,
+            .link_libc = true,
         }),
     });
-    bridge.linkLibC();
     const bridge_install = b.addInstallArtifact(bridge, .{});
     const bridge_step = b.step("bridge", "Build the Linux/WSL2 bridge");
     bridge_step.dependOn(&bridge_install.step);

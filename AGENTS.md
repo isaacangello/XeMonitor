@@ -1,13 +1,21 @@
 # AGENTS.md — Contexto para o assistente (XeMonitor)
 
 ## Projeto
-**XeMonitor** — aplicação Zig que lê códigos de barras de um scanner Honeywell 1900 (Granit) via CH340 (USB-Serial) e injeta o texto como teclado no Windows.
+**XeMonitor** — aplicação Zig que lê códigos de barras de um scanner Honeywell 1900 (Granit) via **CH340 (USB-SERIAL)** e injeta o texto como teclado no Windows via **`SendInput` nativo (Win32)**.
+
+> Importante: o alvo é o scanner **USB-SERIAL**. Scanners USB-HID já funcionam como teclado nativo no Gerenciador de Dispositivos e **não** fazem parte do fluxo.
 
 - Scanner: Honeywell 1900 · adaptador CH340 USB-Serial · porta atual `COM4` (pode mudar)
 - Serial: `115200 8N1`, sem handshake
 - Driver CH340 no Windows **quebrado** (erro 31 / AccessDenied) → o fluxo ativo usa **TCP bridge via WSL2**:
   - **WSL2** (Arch, systemd rodando) lê `/dev/ttyUSB0` e serve via TCP na porta **9000** (`zig-out/bin/bridge`)
-  - **Windows** conecta com `xemonitor.exe --tcp 127.0.0.1:9000` e injeta via PowerShell `SendKeys`
+  - **Windows** conecta com `xemonitor.exe --tcp 127.0.0.1:9000` e injeta via `SendInput` (Win32, nativo, sem PowerShell/clipboard)
+
+## Injeção de teclado (Windows)
+- Padrão: `.windows_sendinput` — `SendInput` com `KEYEVENTF_UNICODE` (texto) e `VK_RETURN` (Enter), em um único batch.
+- Estruturas ABI em `src/main.zig` (struct `w`): `INPUT` tem **40 bytes no x64** (o union interno usa MOUSEINPUT de 32 bytes) — `cbSize` incorreto faz `SendInput` retornar 0. Diagnóstico via `GetLastError()` em `w.last_sendinput_error`.
+- UIPI: `SendInput` de Médio→Médio funciona; retorna 0 (bloqueado) se o alvo for de integridade maior. xemonitor e editor devem rodar **não elevados**.
+- Fallback legado `.windows_powershell` (SendKeys + clipboard) ainda existe no enum, mas não é selecionado.
 
 ## Estrutura
 ```
@@ -71,5 +79,8 @@ wsl -d Arch -u root systemctl status docker
 - **Não rodar o CLion elevado para testes de injeção**: processo admin não injeta teclas (UIPI) em janelas não-elevadas.
 - Bridge executa de `/usr/local/bin/xemonitor-bridge` (cópia feita pelo install script); ao recompilar, rodar install script com `--reinstall` ou re-rodar o install.
 - Preferir `logPrint()` (stderr + `xemonitor.log`) em vez de `std.debug.print`.
+- Logs das 3 vias (stdin/TCP/serial): `[scan] '...'` (conteúdo lido), `[info] injected '...'` e `[info] enter sent` (sucesso do SendInput). Eco cru de byte foi removido — não reintroduzir.
+- Ícone de bandeja é **opt-in** (`--tray`); padrão desligado. O ícone usa PowerShell oculto — se o processo for morto com `taskkill /f`, vira órfão (limpar cache `TrayNotify` + reiniciar explorer).
 - O modo TCP do bridge deve aceitar múltiplas conexões (xemonitor reconecta a cada 2s).
+- Validar injeção sem elevado: tarefa agendada com `/rl LIMITED` + wrapper `.cmd` que redireciona stdout/stderr para arquivo; ler o log com a ferramenta read (a saída do terminal corrompe bytes).
 - Ver `TODO.md` (plano atual) e `.checkpoint.md` (contexto histórico/pendências).

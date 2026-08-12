@@ -25,7 +25,7 @@
     .fingerprint = 0x49009d47217c7a66, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .serial = .{
-            .url = "https://github.com/ZigEmbeddedGroup/serial/archive/e89a24c.zip",
-            .hash = "serial-0.0.1-PoeRzF60AAAN8Iu0yXTIX-t3DVzsnmN7vWHKM2HA2Zbq",
+            .url = "https://github.com/ZigEmbeddedGroup/serial/archive/25b58d0ea62f7bfc33e6c147c1c02193a50c65fb.zip",
+            .hash = "serial-0.0.1-PoeRzD66AACCQUHzsIssi6bOcEtnQFPebT6WLvno0I_p",
         },
     },
     .paths = .{

@@ -64,7 +64,7 @@ if %errorlevel% neq 0 (
     wsl systemctl is-enabled xemonitor-bridge >nul 2>&1
     if %errorlevel% neq 0 (
         echo [INFO] Instalando servico systemd (copia para /usr/local/bin)...
-        wsl bash scripts/install_bridge_service.sh
+        wsl -u root bash scripts/install_bridge_service.sh
         if !errorlevel! neq 0 (
             echo [ERRO] Falha ao instalar o servico do bridge.
             pause
@@ -72,7 +72,7 @@ if %errorlevel% neq 0 (
         )
     )
     echo [INFO] Iniciando servico 'xemonitor-bridge'...
-    wsl systemctl start xemonitor-bridge
+    wsl -u root systemctl start xemonitor-bridge
     if !errorlevel! neq 0 (
         echo [AVISO] O servico pode estar aguardando /dev/ttyUSB0 (start-pre).
     )
@@ -89,9 +89,12 @@ if %errorlevel% equ 0 (
 echo [2/3] Iniciando xemonitor (TCP bridge)...
 start "XeMonitor" cmd /c "zig-out\bin\xemonitor.exe --tcp 127.0.0.1:9000"
 
-:: 6. Abre o Bloco de Notas
-echo [3/3] Abrindo Bloco de Notas para teste...
-start notepad.exe
+:: 6. Abre o editor para teste
+echo [3/3] Abrindo Notepad++ para teste...
+set "NPP=C:\Program Files\Notepad++\notepad++.exe"
+if not exist "%NPP%" set "NPP=%LOCALAPPDATA%\Programs\Notepad++\notepad++.exe"
+if not exist "%NPP%" set "NPP=notepad.exe"
+start "" "%NPP%"
 
 echo.
 echo ========================================

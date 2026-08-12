@@ -117,10 +117,98 @@ const w = if (winapi_available) struct {
     ) callconv(.winapi) windows.HANDLE;
 
     const ERROR_ALREADY_EXISTS: windows.DWORD = 183;
+
+    const INPUT_KEYBOARD: windows.DWORD = 1;
+    const KEYEVENTF_KEYUP: windows.DWORD = 0x0002;
+    const KEYEVENTF_UNICODE: windows.DWORD = 0x0004;
+    const VK_RETURN: windows.WORD = 0x0D;
+
+    const KEYBDINPUT = extern struct {
+        wVk: windows.WORD,
+        wScan: windows.WORD,
+        dwFlags: windows.DWORD,
+        time: windows.DWORD,
+        dwExtraInfo: usize,
+    };
+
+    const MOUSEINPUT = extern struct {
+        dx: i32,
+        dy: i32,
+        mouseData: windows.DWORD,
+        dwFlags: windows.DWORD,
+        time: windows.DWORD,
+        dwExtraInfo: usize,
+    };
+
+    const HARDWAREINPUT = extern struct {
+        uMsg: windows.DWORD,
+        wParamL: windows.WORD,
+        wParamH: windows.WORD,
+    };
+
+    const INPUT_UNION = extern union {
+        mi: MOUSEINPUT,
+        ki: KEYBDINPUT,
+        hi: HARDWAREINPUT,
+    };
+
+    const INPUT = extern struct {
+        input_type: windows.DWORD,
+        u: INPUT_UNION,
+    };
+
+    extern "user32" fn SendInput(
+        cInputs: windows.DWORD,
+        pInputs: [*]const INPUT,
+        cbSize: c_int,
+    ) callconv(.winapi) windows.DWORD;
+
+    var last_sendinput_error: windows.DWORD = 0;
+
+    fn typeText(text: []const u8) bool {
+        var utf16_buf: [1024]u16 = undefined;
+        if (text.len > utf16_buf.len) return false;
+        const n_units = std.unicode.utf8ToUtf16Le(utf16_buf[0..], text) catch return false;
+        var inputs: [2048]INPUT = undefined;
+        var n: usize = 0;
+        for (utf16_buf[0..n_units]) |ch| {
+            inputs[n] = .{
+                .input_type = INPUT_KEYBOARD,
+                .u = .{ .ki = .{ .wVk = 0, .wScan = ch, .dwFlags = KEYEVENTF_UNICODE, .time = 0, .dwExtraInfo = 0 } },
+            };
+            n += 1;
+            inputs[n] = .{
+                .input_type = INPUT_KEYBOARD,
+                .u = .{ .ki = .{ .wVk = 0, .wScan = ch, .dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, .time = 0, .dwExtraInfo = 0 } },
+            };
+            n += 1;
+        }
+        if (n == 0) return true;
+        const n_u32: windows.DWORD = @intCast(n);
+        const sent = SendInput(n_u32, &inputs, @sizeOf(INPUT));
+        if (sent != n_u32) last_sendinput_error = GetLastError();
+        return sent == n_u32;
+    }
+
+    fn pressEnter() bool {
+        var inputs: [2]INPUT = undefined;
+        inputs[0] = .{
+            .input_type = INPUT_KEYBOARD,
+            .u = .{ .ki = .{ .wVk = VK_RETURN, .wScan = 0, .dwFlags = 0, .time = 0, .dwExtraInfo = 0 } },
+        };
+        inputs[1] = .{
+            .input_type = INPUT_KEYBOARD,
+            .u = .{ .ki = .{ .wVk = VK_RETURN, .wScan = 0, .dwFlags = KEYEVENTF_KEYUP, .time = 0, .dwExtraInfo = 0 } },
+        };
+        const sent = SendInput(2, &inputs, @sizeOf(INPUT));
+        if (sent != 2) last_sendinput_error = GetLastError();
+        return sent == 2;
+    }
 } else struct {};
 
 var log_file: ?std.fs.File = null;
 var log_mutex: std.Thread.Mutex = .{};
+var log_line_start: bool = true;
 
 fn logPrint(comptime fmt: []const u8, args: anytype) void {
     log_mutex.lock();
@@ -129,7 +217,12 @@ fn logPrint(comptime fmt: []const u8, args: anytype) void {
     if (log_file) |f| {
         var buf: [4096]u8 = undefined;
         const out = std.fmt.bufPrint(&buf, fmt, args) catch return;
+        if (log_line_start) {
+            _ = f.write("cmd_stdout: ") catch {};
+            log_line_start = false;
+        }
         _ = f.write(out) catch {};
+        if (out.len > 0 and out[out.len - 1] == '\n') log_line_start = true;
     }
 }
 
@@ -159,7 +252,7 @@ const CliOptions = struct {
     use_winapi: bool = false,
     tcp_addr: ?[]u8 = null,
     use_stdin: bool = false,
-    no_tray: bool = false,
+    tray: bool = false,
     kill_existing: bool = false,
 };
 
@@ -172,7 +265,7 @@ fn printUsage() void {
         \\  xemonitor --winapi      (use native Win32 serial API on Windows)
         \\  xemonitor --tcp <HOST:PORT>  (read from TCP instead of serial)
         \\  xemonitor --stdin           (read from stdin)
-        \\  xemonitor --no-tray         (disable system tray icon)
+        \\  xemonitor --tray            (enable system tray icon; off by default)
         \\  xemonitor --kill            (terminate a running instance)
         \\
         \\Examples:
@@ -221,8 +314,8 @@ fn parseCliOptions(allocator: std.mem.Allocator) !CliOptions {
             continue;
         }
 
-        if (std.mem.eql(u8, arg, "--no-tray")) {
-            options.no_tray = true;
+        if (std.mem.eql(u8, arg, "--tray")) {
+            options.tray = true;
             continue;
         }
 
@@ -342,6 +435,7 @@ fn runCommand(argv: []const []const u8) !void {
 }
 
 const KeyboardInjector = enum {
+    windows_sendinput,
     windows_powershell,
     linux_wayland_ydotool,
     linux_x11_xdotool,
@@ -351,6 +445,16 @@ fn simulateKeyboardInput(text: []const u8, injector: KeyboardInjector) !void {
     if (text.len == 0) return;
 
     switch (injector) {
+        .windows_sendinput => {
+            if (winapi_available) {
+                if (!w.typeText(text)) {
+                    logPrint("\n[error] SendInput text failed (GetLastError=0x{X:0>8})\n", .{w.last_sendinput_error});
+                    return error.InjectFailed;
+                }
+                return;
+            }
+            return error.UnsupportedPlatform;
+        },
         .windows_powershell => {
             try runCommand(&.{
                 "powershell",
@@ -372,6 +476,16 @@ fn simulateKeyboardInput(text: []const u8, injector: KeyboardInjector) !void {
 
 fn simulateEnter(injector: KeyboardInjector) !void {
     switch (injector) {
+        .windows_sendinput => {
+            if (winapi_available) {
+                if (!w.pressEnter()) {
+                    logPrint("\n[error] SendInput enter failed (GetLastError=0x{X:0>8})\n", .{w.last_sendinput_error});
+                    return error.InjectFailed;
+                }
+                return;
+            }
+            return error.UnsupportedPlatform;
+        },
         .windows_powershell => {
             try runCommand(&.{
                 "powershell",
@@ -571,7 +685,7 @@ const SerialConnection = union(enum) {
             },
             .tcp => |s| {
                 var byte: [1]u8 = undefined;
-                const read_len = try s.read(&byte);
+                const read_len = try std.posix.recv(s.handle, &byte, 0);
                 if (read_len == 0) return error.EndOfStream;
                 return byte[0];
             },
@@ -828,7 +942,7 @@ pub fn main() !u8 {
     defer if (session_type) |v| std.heap.page_allocator.free(v);
     const is_wayland = if (session_type) |v| std.ascii.eqlIgnoreCase(v, "wayland") else false;
     const injector: KeyboardInjector = if (builtin.os.tag == .windows)
-        .windows_powershell
+        .windows_sendinput
     else if (is_wayland)
         .linux_wayland_ydotool
     else
@@ -890,6 +1004,7 @@ pub fn main() !u8 {
     logPrint("platform={s}, keyboard injector={s}\n", .{
         if (builtin.os.tag == .windows) "windows" else if (is_wayland) "linux-wayland" else "linux-x11/unknown",
         switch (injector) {
+            .windows_sendinput => "sendinput (Win32)",
             .windows_powershell => "powershell+sendkeys",
             .linux_wayland_ydotool => "ydotool",
             .linux_x11_xdotool => "xdotool",
@@ -897,10 +1012,10 @@ pub fn main() !u8 {
     });
 
     var tray = TrayIcon{};
-    if (!cli.no_tray) {
+    if (cli.tray) {
         try tray.start();
     }
-    defer if (!cli.no_tray) tray.stop();
+    defer if (cli.tray) tray.stop();
 
     var did_report_missing_port = false;
     var last_selected_port: ?[]u8 = null;
@@ -926,7 +1041,6 @@ pub fn main() !u8 {
                 }
                 break :blk byte[0];
             };
-            logPrint("{c}", .{b});
 
             if (b == '\r' or b == '\n') {
                 const raw_payload = scan_buffer[0..scan_len];
@@ -934,17 +1048,24 @@ pub fn main() !u8 {
                 if (payload.len != raw_payload.len) {
                     logPrint("\n[info] interleaved '3' removed: '{s}' -> '{s}'\n", .{ raw_payload, payload });
                 }
-                simulateKeyboardInput(payload, injector) catch |err| {
-                    logPrint("\n[error] failed to inject text: {}\n", .{err});
-                };
-                simulateEnter(injector) catch |err| {
-                    logPrint("\n[error] failed to inject enter: {}\n", .{err});
-                };
+                if (payload.len > 0) {
+                    logPrint("\n[scan] '{s}'\n", .{payload});
+                    if (simulateKeyboardInput(payload, injector)) |_| {
+                        logPrint("\n[info] injected '{s}'\n", .{payload});
+                    } else |err| {
+                        logPrint("\n[error] failed to inject text: {}\n", .{err});
+                    }
+                    if (simulateEnter(injector)) |_| {
+                        logPrint("\n[info] enter sent\n", .{});
+                    } else |err| {
+                        logPrint("\n[error] failed to inject enter: {}\n", .{err});
+                    }
+                }
                 scan_len = 0;
                 continue;
             }
 
-            if (b < 0x20 or b == 0x7f) continue;
+            if (b < 0x20 or b == 0x7f or b >= 0x80) continue;
             if (scan_len >= scan_buffer.len) {
                 logPrint("\n[warn] scanner payload too long, buffer reset\n", .{});
                 scan_len = 0;
@@ -972,7 +1093,6 @@ pub fn main() !u8 {
                     logPrint("\n[warn] TCP read failed: {}. reconnecting...\n", .{err});
                     break;
                 };
-                logPrint("{c}", .{b});
 
                 if (b == '\r' or b == '\n') {
                     const raw_payload = scan_buffer[0..scan_len];
@@ -982,17 +1102,24 @@ pub fn main() !u8 {
                         logPrint("\n[info] interleaved '3' removed: '{s}' -> '{s}'\n", .{ raw_payload, payload });
                     }
 
-                    simulateKeyboardInput(payload, injector) catch |err| {
-                        logPrint("\n[error] failed to inject text: {}\n", .{err});
-                    };
-                    simulateEnter(injector) catch |err| {
-                        logPrint("\n[error] failed to inject enter: {}\n", .{err});
-                    };
+                    if (payload.len > 0) {
+                        logPrint("\n[scan] '{s}'\n", .{payload});
+                        if (simulateKeyboardInput(payload, injector)) |_| {
+                            logPrint("\n[info] injected '{s}'\n", .{payload});
+                        } else |err| {
+                            logPrint("\n[error] failed to inject text: {}\n", .{err});
+                        }
+                        if (simulateEnter(injector)) |_| {
+                            logPrint("\n[info] enter sent\n", .{});
+                        } else |err| {
+                            logPrint("\n[error] failed to inject enter: {}\n", .{err});
+                        }
+                    }
                     scan_len = 0;
                     continue;
                 }
 
-                if (b < 0x20 or b == 0x7f) continue;
+                if (b < 0x20 or b == 0x7f or b >= 0x80) continue;
 
                 if (scan_len >= scan_buffer.len) {
                     logPrint("\n[warn] scanner payload too long, buffer reset\n", .{});
@@ -1075,7 +1202,6 @@ pub fn main() !u8 {
                     logPrint("\n[warn] serial read failed on '{s}': {}. reconnecting...\n", .{ port_choice.name, err });
                     break;
                 };
-                logPrint("{c}", .{b});
 
                 if (b == '\r' or b == '\n') {
                     const raw_payload = scan_buffer[0..scan_len];
@@ -1085,17 +1211,24 @@ pub fn main() !u8 {
                         logPrint("\n[info] interleaved '3' removed: '{s}' -> '{s}'\n", .{ raw_payload, payload });
                     }
 
-                    simulateKeyboardInput(payload, injector) catch |err| {
-                        logPrint("\n[error] failed to inject text: {}\n", .{err});
-                    };
-                    simulateEnter(injector) catch |err| {
-                        logPrint("\n[error] failed to inject enter: {}\n", .{err});
-                    };
+                    if (payload.len > 0) {
+                        logPrint("\n[scan] '{s}'\n", .{payload});
+                        if (simulateKeyboardInput(payload, injector)) |_| {
+                            logPrint("\n[info] injected '{s}'\n", .{payload});
+                        } else |err| {
+                            logPrint("\n[error] failed to inject text: {}\n", .{err});
+                        }
+                        if (simulateEnter(injector)) |_| {
+                            logPrint("\n[info] enter sent\n", .{});
+                        } else |err| {
+                            logPrint("\n[error] failed to inject enter: {}\n", .{err});
+                        }
+                    }
                     scan_len = 0;
                     continue;
                 }
 
-                if (b < 0x20 or b == 0x7f) continue;
+                if (b < 0x20 or b == 0x7f or b >= 0x80) continue;
 
                 if (scan_len >= scan_buffer.len) {
                     logPrint("\n[warn] scanner payload too long, buffer reset\n", .{});
