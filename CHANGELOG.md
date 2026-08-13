@@ -23,6 +23,9 @@
 - Versionamento SemVer **v0.<recurso>.<correção>** — primeira tag: v0.1.0
 - README bilíngue: `README.md` (inglês, padrão GitHub) + `README.pt-BR.md` (português), com link de navegação mútuo na linha do título; conteúdo atualizado (features atuais, instalação via `install.sh`/Releases, versionamento, troubleshooting)
 
+### Fixed
+- `install.sh`: eliminado o re-exec `exec sudo -E bash "$0"` (quebrado quando invocado via pipe com caminho absoluto do bash — `$0=/usr/bin/bash` → "cannot execute binary file"). Agora usa `sudo` por comando, funcionando em qualquer invocação (`curl | bash`, `bash install.sh`, `./install.sh`, root direto)
+
 ### Changed
 - Replaced all `std.debug.print` calls with `logPrint()` for unified logging
 - Refactored main loop to support serial/TCP/stdin modes cleanly

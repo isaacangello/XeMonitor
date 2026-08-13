@@ -68,16 +68,20 @@ log()  { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[aviso]\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m[erro]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# roda um comando com privilegios (sudo quando nao for root); sem re-exec
+sudo_run() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
 # ---------- 1. requisitos ----------
 [ "$(uname -m)" = "x86_64" ] || die "suporte apenas a arquitetura x86_64 por enquanto."
 
-if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo >/dev/null 2>&1; then
-        log "elevando para root (necessario para udev + grupos + servico)..."
-        exec sudo -E bash "$0" "$@"
-    else
-        die "rode como root ou instale sudo."
-    fi
+if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
+    die "rode como root ou instale sudo."
 fi
 
 command -v curl >/dev/null 2>&1 || die "curl nao encontrado. Instale-o (pacman -S curl / apt install curl / apk add curl)."
@@ -99,22 +103,22 @@ curl -fsSL "${BASE_URL}/${TARBALL}" -o "${TMP}/${TARBALL}" || die "falha no down
 tar -xzf "${TMP}/${TARBALL}" -C "$TMP" || die "falha ao extrair o tarball (arquivo corrompido?)."
 
 BIN_DIR="${PREFIX}/bin"
-mkdir -p "$BIN_DIR"
-install -m 0755 "$TMP/xemonitor"      "$BIN_DIR/xemonitor"
-install -m 0755 "$TMP/xemonitor-bridge" "$BIN_DIR/xemonitor-bridge"
+sudo_run mkdir -p "$BIN_DIR"
+sudo_run install -m 0755 "$TMP/xemonitor"      "$BIN_DIR/xemonitor"
+sudo_run install -m 0755 "$TMP/xemonitor-bridge" "$BIN_DIR/xemonitor-bridge"
 log "binarios instalados em ${BIN_DIR}/ (xemonitor, xemonitor-bridge)"
 
-mkdir -p "${PREFIX}/share/xemonitor"
-printf '%s\n' "$VERSION" > "${PREFIX}/share/xemonitor/VERSION"
+sudo_run mkdir -p "${PREFIX}/share/xemonitor"
+printf '%s\n' "$VERSION" | sudo_run tee "${PREFIX}/share/xemonitor/VERSION" > /dev/null
 
 # ---------- 4. regra udev CH340 ----------
 UDEV_RULE='SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666"'
 if [ -d /etc/udev/rules.d ]; then
-    printf '%s\n' "$UDEV_RULE" > /etc/udev/rules.d/99-ch340.rules
+    printf '%s\n' "$UDEV_RULE" | sudo_run tee /etc/udev/rules.d/99-ch340.rules > /dev/null
     log "regra udev do CH340 instalada (99-ch340.rules)."
     if command -v udevadm >/dev/null 2>&1; then
-        udevadm control --reload-rules || true
-        udevadm trigger || true
+        sudo_run udevadm control --reload-rules || true
+        sudo_run udevadm trigger || true
     fi
 else
     warn "diretorio /etc/udev/rules.d nao encontrado; pule a regra udev."
@@ -122,7 +126,7 @@ fi
 
 # ---------- 5. grupos de acesso serial ----------
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
-    usermod -aG uucp,dialout "$REAL_USER" || true
+    sudo_run usermod -aG uucp,dialout "$REAL_USER" || true
     log "usuario '${REAL_USER}' adicionado aos grupos uucp e dialout."
     warn "efetivo apenas apos novo login (ou use 'sg uucp -c ...')."
 fi
@@ -130,7 +134,7 @@ fi
 # ---------- 6. servico do bridge ----------
 if [ "$SERVICE" = "1" ]; then
     if [ "$INIT" = "systemd" ]; then
-        cat > /etc/systemd/system/xemonitor-bridge.service <<EOF
+        cat > "$TMP/xemonitor-bridge.service" <<EOF
 [Unit]
 Description=XeMonitor serial-to-TCP bridge (Honeywell 1900 / CH340)
 After=network-online.target
@@ -146,12 +150,13 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-        systemctl daemon-reload
-        systemctl enable xemonitor-bridge >/dev/null 2>&1 || true
-        systemctl restart xemonitor-bridge 2>/dev/null || systemctl start xemonitor-bridge || true
+        sudo_run install -m 0644 "$TMP/xemonitor-bridge.service" /etc/systemd/system/xemonitor-bridge.service
+        sudo_run systemctl daemon-reload
+        sudo_run systemctl enable xemonitor-bridge >/dev/null 2>&1 || true
+        sudo_run systemctl restart xemonitor-bridge 2>/dev/null || sudo_run systemctl start xemonitor-bridge || true
         log "servico systemd 'xemonitor-bridge' instalado e iniciado."
     elif [ "$INIT" = "openrc" ]; then
-        cat > /etc/init.d/xemonitor-bridge <<EOF
+        cat > "$TMP/xemonitor-bridge.init" <<EOF
 #!/sbin/openrc-run
 description="XeMonitor serial-to-TCP bridge (Honeywell 1900 / CH340)"
 command="${BIN_DIR}/xemonitor-bridge"
@@ -162,9 +167,9 @@ depend() {
     need net
 }
 EOF
-        chmod 0755 /etc/init.d/xemonitor-bridge
-        rc-update add xemonitor-bridge default 2>/dev/null || true
-        rc-service xemonitor-bridge start || true
+        sudo_run install -m 0755 "$TMP/xemonitor-bridge.init" /etc/init.d/xemonitor-bridge
+        sudo_run rc-update add xemonitor-bridge default 2>/dev/null || true
+        sudo_run rc-service xemonitor-bridge start || true
         log "servico OpenRC 'xemonitor-bridge' instalado e iniciado."
     else
         warn "init nao identificado; servico nao instalado. Rode o bridge manualmente: ${BIN_DIR}/xemonitor-bridge"
@@ -179,6 +184,11 @@ else
 fi
 
 # ---------- 8. resumo ----------
+if [ "$SERVICE" = "1" ] && [ "$INIT" != "none" ]; then
+    SERVICE_MSG="O servico do bridge ja esta ativo (${INIT}). Escaneie um codigo:"
+else
+    SERVICE_MSG="Servico nao instalado (init=${INIT}). Inicie o bridge manualmente:"
+fi
 cat <<EOF
 
 ============================================================
@@ -189,7 +199,7 @@ cat <<EOF
   Bridge:  ${BIN_DIR}/xemonitor-bridge   (serial -> TCP :9000)
   Cliente: ${BIN_DIR}/xemonitor
 
-  O servico do bridge ja esta ativo. Escaneie um codigo:
+  ${SERVICE_MSG}
     echo 'exemplo' | ${BIN_DIR}/xemonitor --stdin
   ou conecte via TCP (ex.: com o scanner no /dev/ttyUSB0):
     ${BIN_DIR}/xemonitor --tcp 127.0.0.1:9000
