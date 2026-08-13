@@ -23,7 +23,7 @@ jobs:
           curl -fsSL "$ZIG_URL" -o /tmp/zig.tar.xz
           mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
           echo "/opt/zig" >> "$GITHUB_PATH"
-          zig version
+          /opt/zig/zig version
 
       - name: Build xemonitor (x86_64-linux-musl)
         run: zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
