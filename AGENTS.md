@@ -30,6 +30,8 @@ src/bridge.py         → bridge Python legado (stdlib-only, alternativa)
 src/index.html        → página embutida do modo HTTP do bridge
 build.zig             → build script (exe + bridge + testes)
 build.zig.zon         → dependências (Zig 0.15.2, serial)
+README.md             → README em inglês (padrão do GitHub; link p/ português)
+README.pt-BR.md       → README em português (link p/ inglês)
 run_bridge.bat        → inicia bridge (systemd) + xemonitor + Bloco de Notas
 stop_bridge.bat       → encerra bridge + xemonitor
 status_bridge.bat     → status do serviço bridge + xemonitor

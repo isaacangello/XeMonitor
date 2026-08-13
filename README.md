@@ -1,148 +1,173 @@
-# XeMonitor
+# XeMonitor &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [🇧🇷 Português](README.pt-BR.md)
 
-Aplicação em Zig para ler dados de um dispositivo serial (ex.: scanner, Leitor de codigo de barras) e injetar o conteúdo recebido como entrada de teclado no sistema operacional.
+A **Zig** application that reads barcodes from a scanner (e.g. Honeywell 1900 / Granit) and injects the received content as keyboard input into the operating system — effectively turning it into a "virtual keyboard" usable in any program.
 
-## Visão geral
+## How it works
 
-O executável:
+### Windows (active flow — broken CH340 driver)
 
-1. Seleciona a porta serial automaticamente (detecta scanners Honeywell/Xenon) ou via CLI/ambiente.
-2. Configura a serial em `115200 8N1` sem handshake (configurável via `XEMONITOR_BAUD`).
-3. Lê bytes continuamente até encontrar fim de linha (`\r` ou `\n`).
-4. Normaliza payloads que chegam com separador intercalado `'3'` (ex.: `132333` -> `1233`).
-5. Injeta o texto no sistema e em seguida envia `Enter`.
-6. Reconecta automaticamente em caso de desconexão da porta serial.
+The CH340 driver on Windows is corrupted (error 31 / AccessDenied), so serial access is done through a **TCP bridge in WSL2**:
 
-## Stack e dependências
-
-- Zig `0.15.2` (mínimo, conforme `build.zig.zon`)
-- Dependência Zig:
-  - `serial` (ZigEmbeddedGroup)
-- Ferramenta de injeção de teclado por ambiente:
-  - Windows: `powershell` + `System.Windows.Forms.SendKeys`
-  - Linux Wayland: `ydotool`
-  - Linux X11: `xdotool`
-- Ícone de bandeja (opcional):
-  - Linux: `yad`
-  - Windows: `powershell` (já presente por padrão)
-
-## Estrutura do projeto
-
-- `src/main.zig`: lógica principal (serial + parsing + injeção de teclado)
-- `src/root.zig`: módulo base e testes simples
-- `build.zig`: configuração de build/test/run
-- `build.zig.zon`: metadados do pacote e dependências
-
-## Compilar
-
-```bash
-zig build
+```
+Scanner USB-Serial (CH340) → WSL2 reads /dev/ttyUSB0 → bridge TCP :9000
+        → xemonitor.exe --tcp 127.0.0.1:9000 → SendInput (native Win32) → Enter
 ```
 
-## Executar
+### Linux
+
+The bridge can run locally and `xemonitor` injects via **ydotool** (Wayland) or **xdotool** (X11).
+
+## Features
+
+- **Serial reading** (`--port`, `-p`, bare port) at `115200 8N1` with no handshake, with auto-detection of Honeywell/Xenon scanners.
+- **TCP mode** (`--tcp HOST:PORT`) to read from the network (e.g. WSL2 bridge) — reconnects every 2s.
+- **stdin mode** (`--stdin`) for piping from other sources.
+- **Keyboard injection**:
+  - Windows: native `SendInput` (Win32) with `KEYEVENTF_UNICODE` — no PowerShell/clipboard.
+  - Linux Wayland: `ydotool`.
+  - Linux X11: `xdotool`.
+- Sends `Enter` (`VK_RETURN`) right after the injected text.
+- Automatic reconnection on disconnect (serial or TCP).
+- Logs to `xemonitor.log` (`[scan] '...'`, `[info] injected '...'`, `[info] enter sent`).
+- System tray icon is **opt-in** (`--tray`), off by default.
+
+## Installation
+
+### Linux
+
+Official installer (downloads the binary from the latest GitHub Release and configures everything — CH340 udev rule, `uucp/dialout` groups, and the bridge service on systemd or OpenRC):
 
 ```bash
-zig build run
+curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
 ```
 
-Ou após compilar:
+- Installs `xemonitor` and `xemonitor-bridge` into `/usr/local/bin`.
+- Creates the `99-ch340.rules` udev rule (`MODE="0666"`).
+- Adds the user to the `uucp` and `dialout` groups.
+- Installs and starts the `xemonitor-bridge` service (systemd or OpenRC).
+- Requires `sudo` (or running as root).
+
+Local alternative (developer): `zig build bridge` + `zig-out/bin/xemonitor`.
+
+### Windows
+
+1. Clone the repo and build: `zig build` (produces `zig-out\bin\xemonitor.exe`).
+2. Set up WSL2 (Arch) with the bridge: see `scripts/install_bridge_service.sh` and `setup_usb.bat`.
+3. Run `run_bridge.bat` (USB attach via usbipd → systemd bridge service → `xemonitor.exe --tcp` + Notepad).
+
+> Windows installer (next-next-finish wizard) is on the roadmap.
+
+## Build
 
 ```bash
-./zig-out/bin/xemonitor [--port <PORT>]
+zig build              # exe (Windows) / Linux binary + bridge
+zig build bridge       # Linux bridge (WSL2)
+zig build test         # app tests
+zig build test-bridge  # bridge tests (Linux-only)
 ```
 
-Exemplos:
+Requirement: **Zig 0.16.0** (Windows: 0.15.2 at `C:\zig-x86_64-windows-0.15.2\`; WSL/CachyOS: 0.16.0). Zig dependency: `serial` (ZigEmbeddedGroup), pinned via `build.zig.zon`.
+
+## Usage
+
+```
+xemonitor [--port <PORT>]
+xemonitor [-p <PORT>]
+xemonitor <PORT>
+xemonitor --winapi      (use native Win32 serial API on Windows)
+xemonitor --tcp <HOST:PORT>  (read from TCP instead of serial)
+xemonitor --stdin           (read from stdin)
+xemonitor --tray            (enable system tray icon; off by default)
+xemonitor --kill            (terminate a running instance)
+```
+
+Examples:
 
 ```bash
 ./zig-out/bin/xemonitor --port COM4
-./zig-out/bin/xemonitor COM4
+./zig-out/bin/xemonitor --winapi
+./zig-out/bin/xemonitor --tcp 127.0.0.1:9000
+wsl python3 src/bridge.py | xemonitor --stdin
 ```
 
-O programa escolhe a porta nesta ordem:
+### Bridge
 
-1. Argumento de linha de comando (`--port` ou direto)
-2. Variável de ambiente `XEMONITOR_PORT`
-3. Detecção automática (procura scanners Honeywell/Xenon)
-4. Padrão: `COM1` (Windows) ou `/dev/ttyUSB0` (Linux)
-
-O baud rate pode ser configurado via variável de ambiente `XEMONITOR_BAUD` (padrão: `115200`).
-
-O programa escolhe o injetor automaticamente:
-
-- Windows -> PowerShell SendKeys
-- Linux com `XDG_SESSION_TYPE=wayland` -> `ydotool`
-- Linux (outros casos) -> `xdotool`
-
-Tray icon durante execução:
-
-- Linux: se `yad` estiver instalado, cria ícone na bandeja.
-- Windows: cria ícone na bandeja usando `System.Windows.Forms.NotifyIcon` via PowerShell.
-- Outros sistemas: não cria ícone (apenas warning no log).
-
-## Testes
-
-```bash
-zig build test
+```
+bridge                  raw TCP server (default port 9000)
+bridge -s <url>         HTTP server (e.g. http://0.0.0.0:8080)
+bridge -h               help
 ```
 
-## Configuração
+The TCP mode accepts multiple connections (the `xemonitor` client reconnects every 2s).
 
-A porta serial e baud rate podem ser definidos de três formas:
+### Port selection (order)
 
-- **Argumento CLI**: `xemonitor --port COM4` ou `xemonitor COM4`
-- **Variável de ambiente**: `XEMONITOR_PORT=COM4` e `XEMONITOR_BAUD=9600`
-- **Auto-detecção**: o programa procura dispositivos Honeywell/Xenon conectados
+1. CLI argument (`--port`/bare).
+2. `XEMONITOR_PORT` environment variable.
+3. Auto-detection (Honeywell/Xenon scanners).
+4. Default: `COM1` (Windows) or `/dev/ttyUSB0` (Linux).
 
-Valores padrão (quando não detectado):
+Baud rate configurable via `XEMONITOR_BAUD` (default: `115200`), serial `8N1` with no handshake.
 
-- Porta serial: `COM1` (Windows) ou `/dev/ttyUSB0` (Linux)
-- Baud rate: `115200`
-- Configuração serial: 8N1, sem handshake
+## Release / versioning
 
-## Logs esperados
+- **Versioning**: SemVer `v0.<feature>.<fix>` — a new feature bumps the middle number (`v0.1.0 → v0.2.0`); a fix bumps the last (`v0.2.0 → v0.2.1`).
+- Tags `v*` trigger the `.github/workflows/release.yml` workflow, which builds **static musl** binaries (x86_64-linux, ReleaseSafe) and publishes `xemonitor-linux-x86_64.tar.gz` to the GitHub Release.
+- The static musl binary runs on both glibc (Arch/CachyOS/Debian) and musl (Alpine) systems — a single artifact for the Linux host and WSL Alpine.
+- Releases: https://github.com/isaacangello/XeMonitor/releases
 
-Ao iniciar, você verá algo como:
+## Project structure
 
-- `serial port 'COM4' selected (source=cli).`
-- `serial baud rate=115200`
-- `platform=..., keyboard injector=...`
+```
+src/main.zig          → main app (serial/TCP/stdin + keyboard injection)
+src/bridge.zig        → Linux/WSL2 bridge (raw TCP :9000 and HTTP :8080)
+src/bridge.py         → legacy Python bridge (stdlib-only)
+src/index.html        → embedded page for the bridge HTTP mode
+build.zig             → build script (exe + bridge + tests)
+install.sh            → Linux installer (curl | bash)
+.github/workflows/release.yml → CI/CD: v* tags → musl build → GitHub Release
+run_bridge.bat        → USB attach + bridge (systemd) + xemonitor + Notepad
+stop_bridge.bat       → stops bridge + xemonitor
+status_bridge.bat     → bridge service + xemonitor status
+setup_usb.bat         → attach CH340 to WSL via usbipd (auto-elevates)
+setup_wsl.sh          → udev + usbip modules + wsl.conf setup
+scripts/install_bridge_service.sh → installs the bridge systemd unit
+scripts/install_autostart.bat     → scheduled tasks (USB/bridge/xemonitor)
+scripts/uninstall_autostart.bat   → removes scheduled tasks
+systemd/xemonitor-bridge.service  → bridge systemd unit
+TODO.md / AGENTS.md / CHANGELOG.md → plan / context / changelog
+```
 
-Durante leitura, cada byte recebido é impresso no console.
+## Expected logs
 
-Se a porta não for encontrada, o programa tenta reconectar a cada 2 segundos.
+On scan, the log (`xemonitor.log`) shows:
+
+- `[scan] '7898121840147'` — content read (complete, no stray bytes).
+- `[info] injected '...'` — `SendInput` success.
+- `[info] enter sent` — `Enter` sent.
 
 ## Troubleshooting
 
-### Erro de compilação: `no module named 'serial'`
+### Serial port not found
+The program retries every 2s. Specify the port: `xemonitor --port COM3` or `export XEMONITOR_PORT=COM3`.
 
-O módulo `serial` precisa estar importado no `build.zig` dentro do `root_module` do executável. O projeto já está ajustado para isso.
+### Broken CH340 driver on Windows (error 31 / AccessDenied)
+Use the WSL2 TCP bridge flow (`run_bridge.bat`). Driver diagnosis: reinstall/diagnose the CH340.
 
-### Porta serial não encontrada
+### UIPI blocking injection on Windows
+`SendInput` works Medium→Medium; it returns 0 if the target has higher integrity. Run `xemonitor` and the target editor **non-elevated**.
 
-Mensagem típica:
+### No injection on Linux
+- Wayland: make sure `ydotool` is installed (and the `/run/user/.../.ydotool_socket` socket).
+- X11: make sure `xdotool` is installed.
+- Text is typed where the focus is — the `injected` log does not guarantee editor focus.
 
-- `[warn] serial port '...' (source=...) not found. retrying selection every 2s...`
+### Bridge cannot open `/dev/ttyUSB0`
+A newly added group (`uucp`) only takes effect after a new login — use `sg uucp -c '...'` in the current session, or let the systemd service run (root opens the serial). The `MODE="0666"` udev rule also grants access to any user.
 
-O programa tentará reconectar automaticamente. Se necessário, especifique a porta:
+## Roadmap
 
-```bash
-./zig-out/bin/xemonitor --port COM3
-# ou
-export XEMONITOR_PORT=COM3
-```
-
-### Sem injeção de teclado no Linux
-
-- Wayland: confirme se `ydotool` está instalado e funcional.
-- X11: confirme `xdotool`.
-- Verifique permissões do usuário para acesso à serial (`/dev/ttyUSB0`).
-
-### Sem ícone de bandeja no Linux
-
-- Instale `yad` (ex.: Debian/Ubuntu: `sudo apt install yad`).
-- O app continua funcionando sem o ícone; ele apenas emite um warning no log.
-
-### Sem ícone de bandeja no Windows
-
-- Verifique se `powershell` está disponível no PATH.
-- O app continua funcionando sem o ícone; ele apenas emite um warning no log.
+- [x] Virtual keyboard on Windows (`SendInput`, validated) and Linux (`ydotool`/`xdotool`, validated).
+- [x] Linux installer + Release workflow (v0.1.0).
+- [ ] Windows installer (next-next-finish wizard).
+- [ ] Migrate the WSL bridge from Arch/systemd → Alpine/OpenRC (the static musl binary already runs on Alpine).
