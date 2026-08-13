@@ -1,10 +1,14 @@
 const std = @import("std");
-const xemonitor = @import("xemonitor");
 const zig_serial = @import("serial");
 const builtin = @import("builtin");
-const c = if (builtin.os.tag == .windows) @cImport({
-    @cInclude("libserialport.h");
-}) else struct {};
+const c = if (builtin.os.tag == .windows)
+    @cImport({
+        @cInclude("libserialport.h");
+    })
+else
+    @cImport({
+        @cInclude("time.h");
+    });
 const reconnect_interval_ns: u64 = 2 * std.time.ns_per_s;
 const default_port_name = if (builtin.os.tag == .windows) "COM1" else "/dev/ttyUSB0";
 
@@ -93,6 +97,14 @@ const w = if (winapi_available) struct {
     extern "kernel32" fn PurgeComm(
         hFile: windows.HANDLE,
         dwFlags: windows.DWORD,
+    ) callconv(.winapi) windows.BOOL;
+
+    extern "kernel32" fn ReadFile(
+        hFile: windows.HANDLE,
+        lpBuffer: [*]u8,
+        nNumberOfBytesToRead: windows.DWORD,
+        lpNumberOfBytesRead: ?*windows.DWORD,
+        lpOverlapped: ?*anyopaque,
     ) callconv(.winapi) windows.BOOL;
 
     extern "kernel32" fn SetupComm(
@@ -206,23 +218,25 @@ const w = if (winapi_available) struct {
     }
 } else struct {};
 
-var log_file: ?std.fs.File = null;
-var log_mutex: std.Thread.Mutex = .{};
+var log_file: ?std.Io.File = null;
+var log_mutex: std.Io.Mutex = .init;
 var log_line_start: bool = true;
+var global_io: std.Io = undefined;
 
 fn logPrint(comptime fmt: []const u8, args: anytype) void {
-    log_mutex.lock();
-    defer log_mutex.unlock();
+    log_mutex.lock(global_io) catch {};
+    defer log_mutex.unlock(global_io);
     std.debug.print(fmt, args);
     if (log_file) |f| {
-        var buf: [4096]u8 = undefined;
-        const out = std.fmt.bufPrint(&buf, fmt, args) catch return;
+        var wbuf: [1024]u8 = undefined;
+        var writer = f.writerStreaming(global_io, &wbuf);
         if (log_line_start) {
-            _ = f.write("cmd_stdout: ") catch {};
+            writer.interface.writeAll("cmd_stdout: ") catch {};
             log_line_start = false;
         }
-        _ = f.write(out) catch {};
-        if (out.len > 0 and out[out.len - 1] == '\n') log_line_start = true;
+        writer.interface.print(fmt, args) catch {};
+        writer.interface.flush() catch {};
+        if (fmt.len > 0 and fmt[fmt.len - 1] == '\n') log_line_start = true;
     }
 }
 
@@ -278,9 +292,7 @@ fn printUsage() void {
     , .{});
 }
 
-fn parseCliOptions(allocator: std.mem.Allocator) !CliOptions {
-    const args = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, args);
+fn parseCliOptions(allocator: std.mem.Allocator, args: []const [:0]const u8) !CliOptions {
 
     var options = CliOptions{};
     var i: usize = 1;
@@ -341,14 +353,15 @@ fn parseCliOptions(allocator: std.mem.Allocator) !CliOptions {
 }
 
 fn commandSucceeded(argv: []const []const u8) bool {
-    var child = std.process.Child.init(argv, std.heap.page_allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-
-    const term = child.spawnAndWait() catch return false;
+    var child = std.process.spawn(global_io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    }) catch return false;
+    const term = child.wait(global_io) catch return false;
     return switch (term) {
-        .Exited => |code| code == 0,
+        .exited => |code| code == 0,
         else => false,
     };
 }
@@ -364,17 +377,12 @@ const TrayIcon = struct {
                     return;
                 }
 
-                var child = std.process.Child.init(&.{
-                    "yad",
-                    "--notification",
-                    "--image=input-keyboard",
-                    "--text=XeMonitor running",
-                }, std.heap.page_allocator);
-                child.stdin_behavior = .Ignore;
-                child.stdout_behavior = .Ignore;
-                child.stderr_behavior = .Ignore;
-
-                try child.spawn();
+                const child = try std.process.spawn(global_io, .{
+                    .argv = &.{ "yad", "--notification", "--image=input-keyboard", "--text=XeMonitor running" },
+                    .stdin = .ignore,
+                    .stdout = .ignore,
+                    .stderr = .ignore,
+                });
                 self.child = child;
                 logPrint("[info] tray icon enabled (linux/yad).\n", .{});
             },
@@ -384,27 +392,29 @@ const TrayIcon = struct {
                     return;
                 }
 
-                var child = std.process.Child.init(&.{
-                    "powershell",
-                    "-NoProfile",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-Command",
-                    "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Application; $n.Text = 'XeMonitor running'; $n.Visible = $true; while ($true) { Start-Sleep -Seconds 3600 }",
-                }, std.heap.page_allocator);
-                child.stdin_behavior = .Ignore;
-                child.stdout_behavior = .Ignore;
-                child.stderr_behavior = .Ignore;
-
-                try child.spawn();
+                const child = try std.process.spawn(global_io, .{
+                    .argv = &.{
+                        "powershell",
+                        "-NoProfile",
+                        "-WindowStyle",
+                        "Hidden",
+                        "-Command",
+                        "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; $n = New-Object System.Windows.Forms.NotifyIcon; $n.Icon = [System.Drawing.SystemIcons]::Application; $n.Text = 'XeMonitor running'; $n.Visible = $true; while ($true) { Start-Sleep -Seconds 3600 }",
+                    },
+                    .stdin = .ignore,
+                    .stdout = .ignore,
+                    .stderr = .ignore,
+                });
                 self.child = child;
 
-                if (std.fs.cwd().createFile("xemonitor_tray.pid", .{})) |pid_file| {
+                if (std.Io.Dir.cwd().createFile(global_io, "xemonitor_tray.pid", .{})) |pid_file| {
                     var buf: [32]u8 = undefined;
-                    const pid = w.GetProcessId(child.id);
+                    var writer = pid_file.writer(global_io, &buf);
+                    const pid = w.GetProcessId(child.id.?);
                     const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
-                    _ = pid_file.write(pid_str) catch {};
-                    pid_file.close();
+                    writer.interface.writeAll(pid_str) catch {};
+                    writer.interface.flush() catch {};
+                    pid_file.close(global_io);
                 } else |err| {
                     logPrint("[warn] could not write tray PID file: {}\n", .{err});
                 }
@@ -418,20 +428,22 @@ const TrayIcon = struct {
 
     fn stop(self: *TrayIcon) void {
         if (self.child) |*child| {
-            _ = child.kill() catch {};
-            _ = child.wait() catch {};
+            child.kill(global_io);
+            _ = child.wait(global_io) catch {};
             self.child = null;
         }
-        std.fs.cwd().deleteFile("xemonitor_tray.pid") catch {};
+        std.Io.Dir.cwd().deleteFile(global_io, "xemonitor_tray.pid") catch {};
     }
 };
 
 fn runCommand(argv: []const []const u8) !void {
-    var child = std.process.Child.init(argv, std.heap.page_allocator);
-    child.stdin_behavior = .Ignore;
-    child.stdout_behavior = .Ignore;
-    child.stderr_behavior = .Ignore;
-    _ = try child.spawnAndWait();
+    var child = try std.process.spawn(global_io, .{
+        .argv = argv,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    _ = try child.wait(global_io);
 }
 
 const KeyboardInjector = enum {
@@ -503,8 +515,26 @@ fn simulateEnter(injector: KeyboardInjector) !void {
     }
 }
 
+const Timespec = extern struct {
+    tv_sec: isize,
+    tv_nsec: isize,
+};
+
+fn sleepNs(ns: u64) void {
+    if (builtin.os.tag == .windows) return;
+    var req = Timespec{
+        .tv_sec = @intCast(@divFloor(@as(i128, ns), std.time.ns_per_s)),
+        .tv_nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = c.nanosleep(@ptrCast(&req), null);
+}
+
 fn sleepBeforeRetry() void {
-    std.Thread.sleep(reconnect_interval_ns);
+    if (builtin.os.tag == .windows) {
+        w.Sleep(@intCast(reconnect_interval_ns / std.time.ns_per_ms));
+        return;
+    }
+    sleepNs(reconnect_interval_ns);
 }
 
 fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -557,7 +587,7 @@ fn detectAutoSerialPort(allocator: std.mem.Allocator) !?[]u8 {
         if (fallback_port) |v| allocator.free(v);
     }
 
-    var info_iter = zig_serial.list_info() catch null;
+    var info_iter = zig_serial.list_info(global_io) catch null;
     if (info_iter) |*iter| {
         defer iter.deinit();
 
@@ -592,7 +622,7 @@ fn detectAutoSerialPort(allocator: std.mem.Allocator) !?[]u8 {
         return v;
     }
 
-    var list_iter = zig_serial.list() catch null;
+    var list_iter = zig_serial.list(global_io) catch null;
     if (list_iter) |*iter| {
         defer iter.deinit();
 
@@ -605,7 +635,7 @@ fn detectAutoSerialPort(allocator: std.mem.Allocator) !?[]u8 {
     return null;
 }
 
-fn resolvePortChoice(allocator: std.mem.Allocator, cli_port: ?[]const u8) !PortChoice {
+fn resolvePortChoice(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map, cli_port: ?[]const u8) !PortChoice {
     if (cli_port) |port| {
         return .{
             .name = try allocator.dupe(u8, port),
@@ -613,9 +643,7 @@ fn resolvePortChoice(allocator: std.mem.Allocator, cli_port: ?[]const u8) !PortC
         };
     }
 
-    const env_port = std.process.getEnvVarOwned(allocator, "XEMONITOR_PORT") catch null;
-    if (env_port) |port| {
-        defer allocator.free(port);
+    if (environ_map.get("XEMONITOR_PORT")) |port| {
         return .{
             .name = try normalizePortNameOwned(allocator, port),
             .source = .env,
@@ -635,24 +663,38 @@ fn resolvePortChoice(allocator: std.mem.Allocator, cli_port: ?[]const u8) !PortC
     };
 }
 
+fn readByteFromReader(reader: *std.Io.Reader) !u8 {
+    var byte: [1]u8 = undefined;
+    while (true) {
+        var bufs = [_][]u8{&byte};
+        const n = reader.readVec(&bufs) catch |err| switch (err) {
+            error.EndOfStream => return error.EndOfStream,
+            else => return err,
+        };
+        if (n > 0) return byte[0];
+    }
+}
+
 const SerialConnection = union(enum) {
-    windows: *c.struct_sp_port,
+    windows: if (winapi_available) *c.struct_sp_port else void,
     winapi: if (winapi_available) std.os.windows.HANDLE else void,
-    file: std.fs.File,
-    tcp: std.net.Stream,
+    file: std.Io.File,
+    tcp: std.Io.net.Stream,
     std_in: void,
 
     fn close(self: *SerialConnection) void {
         switch (self.*) {
             .windows => |port| {
-                _ = c.sp_close(port);
-                c.sp_free_port(port);
+                if (winapi_available) {
+                    _ = c.sp_close(port);
+                    c.sp_free_port(port);
+                }
             },
             .winapi => |handle| {
                 if (winapi_available) _ = w.CloseHandle(handle);
             },
-            .file => |f| f.close(),
-            .tcp => |s| s.close(),
+            .file => |f| f.close(global_io),
+            .tcp => |s| s.close(global_io),
             .std_in => {},
         }
     }
@@ -660,40 +702,52 @@ const SerialConnection = union(enum) {
     fn readByte(self: *SerialConnection) !u8 {
         switch (self.*) {
             .windows => |port| {
-                var byte: [1]u8 = undefined;
-                while (true) {
-                    const rc = c.sp_blocking_read(port, &byte, 1, 1_000);
-                    if (rc == 1) return byte[0];
-                    if (rc == 0) continue;
-                    return error.SerialReadFailed;
+                if (winapi_available) {
+                    var byte: [1]u8 = undefined;
+                    while (true) {
+                        const rc = c.sp_blocking_read(port, &byte, 1, 1_000);
+                        if (rc == 1) return byte[0];
+                        if (rc == 0) continue;
+                        return error.SerialReadFailed;
+                    }
                 }
+                return error.SerialReadFailed;
             },
             .winapi => |handle| {
-                if (!winapi_available) return error.SerialReadFailed;
-                var byte: [1]u8 = undefined;
-                const bytes_read = std.os.windows.ReadFile(handle, &byte, null) catch {
-                    return error.SerialReadFailed;
-                };
-                if (bytes_read == 0) return error.EndOfStream;
-                return byte[0];
+                if (winapi_available) {
+                    var byte: [1]u8 = undefined;
+                    var bytes_read: std.os.windows.DWORD = 0;
+                    if (w.ReadFile(handle, &byte, 1, &bytes_read, null) == 0) {
+                        return error.SerialReadFailed;
+                    }
+                    if (bytes_read == 0) return error.EndOfStream;
+                    return byte[0];
+                }
+                return error.SerialReadFailed;
             },
             .file => |f| {
-                var byte: [1]u8 = undefined;
-                const read_len = try f.read(&byte);
-                if (read_len == 0) return error.EndOfStream;
-                return byte[0];
+                var rbuf: [1]u8 = undefined;
+                var r = f.reader(global_io, &rbuf);
+                return readByteFromReader(&r.interface) catch |err| switch (err) {
+                    error.EndOfStream => return error.EndOfStream,
+                    else => return error.SerialReadFailed,
+                };
             },
             .tcp => |s| {
-                var byte: [1]u8 = undefined;
-                const read_len = try std.posix.recv(s.handle, &byte, 0);
-                if (read_len == 0) return error.EndOfStream;
-                return byte[0];
+                var rbuf: [0]u8 = undefined;
+                var r = s.reader(global_io, &rbuf);
+                return readByteFromReader(&r.interface) catch |err| switch (err) {
+                    error.EndOfStream => return error.EndOfStream,
+                    else => return error.SerialReadFailed,
+                };
             },
             .std_in => {
                 var stdin_buf: [1]u8 = undefined;
-                const read_len = try std.fs.File.stdin().read(&stdin_buf);
-                if (read_len == 0) return error.EndOfStream;
-                return stdin_buf[0];
+                var r = std.Io.File.stdin().reader(global_io, &stdin_buf);
+                return readByteFromReader(&r.interface) catch |err| switch (err) {
+                    error.EndOfStream => return error.EndOfStream,
+                    else => return error.SerialReadFailed,
+                };
             },
         }
     }
@@ -807,14 +861,9 @@ fn openAndConfigureSerialWinapi(port_name: []const u8, baud_rate: u32) !SerialCo
 }
 
 fn connectTcp(addr: []const u8) !SerialConnection {
-    const colon_pos = std.mem.indexOfScalar(u8, addr, ':') orelse return error.InvalidAddress;
-    const host = addr[0..colon_pos];
-    const port_str = addr[colon_pos + 1 ..];
-    const port = std.fmt.parseInt(u16, port_str, 10) catch return error.InvalidPort;
-
-    const address = try std.net.Address.parseIp(host, port);
-    const stream = try std.net.tcpConnectToAddress(address);
-    logPrint("[info] connected to TCP {s}:{d}\n", .{ host, port });
+    const address = try std.Io.net.IpAddress.parseLiteral(addr);
+    const stream = try address.connect(global_io, .{ .mode = .stream });
+    logPrint("[info] connected to TCP {s}\n", .{addr});
     return .{ .tcp = stream };
 }
 
@@ -851,9 +900,9 @@ fn openAndConfigureSerial(port_name: []const u8, baud_rate: u32, use_winapi: boo
 
     var serial = blk: {
         if (std.fs.path.isAbsolute(port_name)) {
-            break :blk std.fs.openFileAbsolute(port_name, .{ .mode = .read_write });
+            break :blk std.Io.Dir.openFileAbsolute(global_io, port_name, .{ .mode = .read_write });
         }
-        break :blk std.fs.cwd().openFile(port_name, .{ .mode = .read_write });
+        break :blk std.Io.Dir.cwd().openFile(global_io, port_name, .{ .mode = .read_write });
     } catch |err| switch (err) {
         error.FileNotFound => return error.FileNotFound,
         else => return err,
@@ -866,7 +915,7 @@ fn openAndConfigureSerial(port_name: []const u8, baud_rate: u32, use_winapi: boo
         .stop_bits = .one,
         .handshake = .none,
     }) catch |err| {
-        serial.close();
+        serial.close(global_io);
         return err;
     };
 
@@ -912,12 +961,15 @@ fn stripInterleavedSeparator(raw: []const u8, out: []u8) []const u8 {
     return out[0..out_len];
 }
 
-pub fn main() !u8 {
-    log_file = std.fs.cwd().createFile("xemonitor.log", .{ .truncate = false }) catch null;
-    defer if (log_file) |f| f.close();
+pub fn main(init: std.process.Init) !u8 {
+    global_io = init.io;
+
+    log_file = std.Io.Dir.cwd().createFile(global_io, "xemonitor.log", .{ .truncate = false }) catch null;
+    defer if (log_file) |f| f.close(global_io);
     logPrint("[info] log file: xemonitor.log\n", .{});
 
-    const cli = parseCliOptions(std.heap.page_allocator) catch |err| switch (err) {
+    const cli_args = try init.minimal.args.toSlice(init.arena.allocator());
+    const cli = parseCliOptions(std.heap.page_allocator, cli_args) catch |err| switch (err) {
         error.HelpRequested => return 0,
         else => {
             logPrint("[error] invalid arguments: {}\n", .{err});
@@ -927,8 +979,7 @@ pub fn main() !u8 {
     };
     defer if (cli.port_override) |v| std.heap.page_allocator.free(v);
 
-    const baud_env: ?[]u8 = std.process.getEnvVarOwned(std.heap.page_allocator, "XEMONITOR_BAUD") catch null;
-    defer if (baud_env) |v| std.heap.page_allocator.free(v);
+    const baud_env: ?[]const u8 = init.environ_map.get("XEMONITOR_BAUD");
     const baud_rate: u32 = blk: {
         if (baud_env) |v| {
             break :blk std.fmt.parseInt(u32, v, 10) catch {
@@ -938,8 +989,7 @@ pub fn main() !u8 {
         }
         break :blk 115_200;
     };
-    const session_type: ?[]u8 = std.process.getEnvVarOwned(std.heap.page_allocator, "XDG_SESSION_TYPE") catch null;
-    defer if (session_type) |v| std.heap.page_allocator.free(v);
+    const session_type: ?[]const u8 = init.environ_map.get("XDG_SESSION_TYPE");
     const is_wayland = if (session_type) |v| std.ascii.eqlIgnoreCase(v, "wayland") else false;
     const injector: KeyboardInjector = if (builtin.os.tag == .windows)
         .windows_sendinput
@@ -950,36 +1000,39 @@ pub fn main() !u8 {
 
     if (cli.kill_existing) {
         if (builtin.os.tag == .windows) {
-            if (std.fs.cwd().readFileAlloc(std.heap.page_allocator, "xemonitor_tray.pid", 32)) |pid_str| {
+            if (std.Io.Dir.cwd().readFileAlloc(global_io, "xemonitor_tray.pid", std.heap.page_allocator, std.Io.Limit.limited(32))) |pid_str| {
                 defer std.heap.page_allocator.free(pid_str);
                 const pid = std.fmt.parseInt(u32, std.mem.trim(u8, pid_str, " \t\r\n"), 10) catch 0;
                 if (pid > 0) {
                     logPrint("[info] killing tray icon PID {d}...\n", .{pid});
                     var buf: [32]u8 = undefined;
                     const pid_arg = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch "0";
-                    var child = std.process.Child.init(&.{ "taskkill", "/F", "/PID", pid_arg }, std.heap.page_allocator);
-                    child.stdin_behavior = .Ignore;
-                    child.stdout_behavior = .Ignore;
-                    child.stderr_behavior = .Ignore;
-                    child.spawn() catch {};
+                    _ = std.process.spawn(global_io, .{
+                        .argv = &.{ "taskkill", "/F", "/PID", pid_arg },
+                        .stdin = .ignore,
+                        .stdout = .ignore,
+                        .stderr = .ignore,
+                    }) catch {};
                 }
-                std.fs.cwd().deleteFile("xemonitor_tray.pid") catch {};
+                std.Io.Dir.cwd().deleteFile(global_io, "xemonitor_tray.pid") catch {};
             } else |_| {}
             logPrint("[info] killing xemonitor.exe...\n", .{});
-            var child = std.process.Child.init(&.{ "taskkill", "/F", "/IM", "xemonitor.exe" }, std.heap.page_allocator);
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-            child.spawn() catch |err| {
+            _ = std.process.spawn(global_io, .{
+                .argv = &.{ "taskkill", "/F", "/IM", "xemonitor.exe" },
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            }) catch |err| {
                 logPrint("[warn] taskkill failed: {}\n", .{err});
             };
         } else {
             logPrint("[info] killing running xemonitor instances...\n", .{});
-            var child = std.process.Child.init(&.{ "pkill", "-9", "xemonitor" }, std.heap.page_allocator);
-            child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Ignore;
-            child.stderr_behavior = .Ignore;
-            child.spawn() catch |err| {
+            _ = std.process.spawn(global_io, .{
+                .argv = &.{ "pkill", "-9", "xemonitor" },
+                .stdin = .ignore,
+                .stdout = .ignore,
+                .stderr = .ignore,
+            }) catch |err| {
                 logPrint("[warn] pkill failed: {}\n", .{err});
             };
         }
@@ -1026,20 +1079,23 @@ pub fn main() !u8 {
         logPrint("[info] stdin mode: reading from standard input.\n", .{});
         var scan_buffer: [512]u8 = undefined;
         var normalized_buffer: [512]u8 = undefined;
+        var stdin_rbuf: [64]u8 = undefined;
+        var stdin_reader = std.Io.File.stdin().reader(global_io, &stdin_rbuf);
         var scan_len: usize = 0;
 
         while (true) {
             const b = blk: {
-                var byte: [1]u8 = undefined;
-                const read_len = std.fs.File.stdin().read(&byte) catch |err| {
-                    logPrint("\n[warn] stdin read failed: {}\n", .{err});
-                    return 1;
+                const byte = readByteFromReader(&stdin_reader.interface) catch |err| switch (err) {
+                    error.EndOfStream => {
+                        logPrint("[info] stdin closed.\n", .{});
+                        return 0;
+                    },
+                    else => {
+                        logPrint("\n[warn] stdin read failed: {}\n", .{err});
+                        return 1;
+                    },
                 };
-                if (read_len == 0) {
-                    logPrint("[info] stdin closed.\n", .{});
-                    return 0;
-                }
-                break :blk byte[0];
+                break :blk byte;
             };
 
             if (b == '\r' or b == '\n') {
@@ -1135,7 +1191,7 @@ pub fn main() !u8 {
         }
     } else {
         while (true) {
-            const port_choice = try resolvePortChoice(std.heap.page_allocator, cli.port_override);
+            const port_choice = try resolvePortChoice(std.heap.page_allocator, init.environ_map, cli.port_override);
             defer std.heap.page_allocator.free(port_choice.name);
 
             const selection_changed = blk: {

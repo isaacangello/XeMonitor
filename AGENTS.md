@@ -8,8 +8,13 @@
 - Scanner: Honeywell 1900 · adaptador CH340 USB-Serial · porta atual `COM4` (pode mudar)
 - Serial: `115200 8N1`, sem handshake
 - Driver CH340 no Windows **quebrado** (erro 31 / AccessDenied) → o fluxo ativo usa **TCP bridge via WSL2**:
-  - **WSL2** (Arch, systemd rodando) lê `/dev/ttyUSB0` e serve via TCP na porta **9000** (`zig-out/bin/bridge`)
+  - **WSL2** lê `/dev/ttyUSB0` e serve via TCP na porta **9000** (`zig-out/bin/bridge`) — hoje **Arch/systemd**; planejado migrar p/ **Alpine/OpenRC** (menos recursos)
   - **Windows** conecta com `xemonitor.exe --tcp 127.0.0.1:9000` e injeta via `SendInput` (Win32, nativo, sem PowerShell/clipboard)
+
+## Injeção de teclado (Linux)
+- No Linux o bridge pode rodar local (ex.: CachyOS) e o `xemonitor` injeta via **ydotool** (Wayland) ou **xdotool** (X11), tornando o app um "teclado virtual" usável em qualquer programa.
+- Linux (CachyOS) validado de ponta a ponta: bridge sob **systemd** (unit de usuário, ver abaixo) → TCP 9000 → `xemonitor --tcp` → ydotool → editor focado.
+- Binário do bridge é **musl estático** (Zig linka musl p/ Linux por padrão): roda em glibc (Arch/CachyOS) **e** musl (Alpine) sem recompilação — provado via `readelf` (sem dynamic interpreter).
 
 ## Injeção de teclado (Windows)
 - Padrão: `.windows_sendinput` — `SendInput` com `KEYEVENTF_UNICODE` (texto) e `VK_RETURN` (Enter), em um único batch.
@@ -34,10 +39,19 @@ scripts/install_bridge_service.sh → instala systemd unit do bridge
 scripts/install_autostart.bat     → cria tarefas agendadas (USB/bridge/xemonitor)
 scripts/uninstall_autostart.bat   → remove as tarefas agendadas
 systemd/xemonitor-bridge.service  → unit systemd do bridge
+openrc/xemonitor-bridge           → (planejado) init script OpenRC p/ Alpine/WSL
+install.sh                        → instalador Linux (curl | bash): release + udev + grupos + serviço
+.github/workflows/release.yml     → CI/CD: tags v* → build musl ReleaseSafe → GitHub Release
 TODO.md               → plano/checklist da sessão atual
 .checkpoint.md        → diário de sessão (contexto + pendências)
 CHANGELOG.md          → changelog
 ```
+
+## Roadmap (visão geral)
+1. **xemonitor como teclado nos dois SO** — Windows: `SendInput` (validado); Linux: ydotool/xdotool (validado no CachyOS).
+2. **Migrar bridge WSL de Arch/systemd → Alpine/OpenRC** (menos recursos) — ver seção no `TODO.md`; testar OpenRC no WSL real.
+3. **Instalador Windows** (SÓ quando for ao Windows): wizard next-next-finish.
+4. **Instalador Linux**: `curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash` (feito; aguardando commit + tag `v0.1.0`).
 
 ## Comandos
 ```cmd
@@ -63,14 +77,20 @@ zig-out\bin\xemonitor.exe --stdin
 wsl -d Arch -u root systemctl start xemonitor-bridge
 wsl -d Arch -u root systemctl status xemonitor-bridge
 
+:: Bridge manual no CachyOS (unit systemd de usuário)
+systemctl --user start xemonitor-bridge
+systemctl --user status xemonitor-bridge
+journalctl --user -u xemonitor-bridge -f
+
 :: Docker (tarefa agendada 'init Docker WSL' cuida no boot/logon)
 wsl -d Arch -u root systemctl status docker
 ```
 
 ## Ambiente
-- Zig **0.15.2** em `C:\zig-x86_64-windows-0.15.2\` (Windows); **0.16.0** no WSL
+- Zig **0.15.2** em `C:\zig-x86_64-windows-0.15.2\` (Windows); **0.16.0** no WSL; CachyOS (dev/teste Linux)
 - libserialport em `C:\msys64\ucrt64\`
-- WSL2 distro **Arch** (nome: `Arch`), systemd rodando, Docker ativo
+- WSL2 distro **Arch** (nome: `Arch`), systemd rodando, Docker ativo — **planejado migrar p/ Alpine/OpenRC**
+- **CachyOS** (Linux host de dev/teste): Wayland + ydotool (`/run/user/1000/.ydotool_socket`), bridge via **unit systemd de usuário** `~/.config/systemd/user/xemonitor-bridge.service` com `ExecStart=/usr/bin/sg uucp -c '...bridge'` (wrapper dispensa re-login; sessão antiga não herdou grupo `uucp`)
 - usbipd em `C:\Program Files\usbipd-win\usbipd.exe` (nem sempre no PATH)
 - `gh` (GitHub CLI) em `C:\Program Files\GitHub CLI\gh.exe`
 - Git remote: `git@github.com:isaacangello/XeMonitor.git` (SSH)

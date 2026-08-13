@@ -132,6 +132,8 @@ pub fn build(b: *std.Build) void {
     });
     if (target.result.os.tag == .windows) {
         configureWindowsLibserialport(b, exe);
+    } else {
+        exe.root_module.link_libc = true;
     }
 
     // This declares intent for the executable to be installed into the

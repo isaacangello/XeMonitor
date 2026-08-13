@@ -7,7 +7,37 @@ const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
     @cInclude("termios.h");
+    @cInclude("sys/socket.h");
+    @cInclude("netinet/in.h");
+    @cInclude("arpa/inet.h");
+    @cInclude("pthread.h");
+    @cInclude("time.h");
 });
+
+const Timespec = extern struct {
+    tv_sec: isize,
+    tv_nsec: isize,
+};
+
+fn sleepNs(ns: u64) void {
+    var req = Timespec{
+        .tv_sec = @intCast(ns / std.time.ns_per_s),
+        .tv_nsec = @intCast(ns % std.time.ns_per_s),
+    };
+    _ = c.nanosleep(@ptrCast(&req), null);
+}
+
+const Mutex = struct {
+    inner: c.pthread_mutex_t = std.mem.zeroes(c.pthread_mutex_t),
+
+    fn lock(self: *Mutex) void {
+        _ = c.pthread_mutex_lock(&self.inner);
+    }
+
+    fn unlock(self: *Mutex) void {
+        _ = c.pthread_mutex_unlock(&self.inner);
+    }
+};
 
 const TCP_PORT: u16 = 9000;
 const BAUD: u32 = 115200;
@@ -17,7 +47,7 @@ const CODE_MAX = 256;
 const index_html = @embedFile("index.html");
 
 const SharedState = struct {
-    mutex: std.Thread.Mutex = .{},
+    mutex: Mutex = .{},
     code: [CODE_MAX]u8 = undefined,
     code_len: usize = 0,
     seq: u64 = 0,
@@ -132,7 +162,7 @@ fn serialReaderTask(state: *SharedState) void {
         const fd = openSerial();
         if (fd < 0) {
             std.debug.print("[bridge] serial unavailable, retrying in 2s...\n", .{});
-            std.Thread.sleep(2 * std.time.ns_per_s);
+            sleepNs(2 * std.time.ns_per_s);
             continue;
         }
 
@@ -148,47 +178,82 @@ fn serialReaderTask(state: *SharedState) void {
             state.update(buf[0..@as(usize, @intCast(n))]);
         }
         _ = c.close(fd);
-        if (failed) std.Thread.sleep(500 * std.time.ns_per_ms);
+        if (failed) sleepNs(500 * std.time.ns_per_ms);
     }
 }
 
 // ---- raw TCP mode (default) ----
 
-fn handleTcpConnection(conn: std.net.Stream, state: *SharedState) void {
-    defer conn.close();
+const SockAddrIn = extern struct {
+    sin_family: u16 = c.AF_INET,
+    sin_port: u16 = undefined,
+    sin_addr: extern struct { s_addr: u32 } = .{ .s_addr = 0 },
+    sin_zero: [8]u8 = [_]u8{0} ** 8,
+};
+
+fn listenOn(host: []const u8, port: u16) !c_int {
+    const fd = c.socket(c.AF_INET, c.SOCK_STREAM, 0);
+    if (fd < 0) return error.SocketFailed;
+
+    const opt: c_int = 1;
+    _ = c.setsockopt(fd, c.SOL_SOCKET, c.SO_REUSEADDR, &opt, @sizeOf(c_int));
+
+    var addr = SockAddrIn{ .sin_port = std.mem.nativeToBig(u16, port) };
+    if (host.len > 0 and !std.mem.eql(u8, host, "0.0.0.0")) {
+        var host_buf: [128]u8 = undefined;
+        const host_z = std.fmt.bufPrintZ(&host_buf, "{s}", .{host}) catch unreachable;
+        if (c.inet_pton(c.AF_INET, host_z.ptr, &addr.sin_addr.s_addr) != 1) {
+            _ = c.close(fd);
+            return error.InvalidHost;
+        }
+    }
+
+    if (c.bind(fd, @ptrCast(&addr), @sizeOf(SockAddrIn)) < 0) {
+        _ = c.close(fd);
+        return error.BindFailed;
+    }
+    if (c.listen(fd, 128) < 0) {
+        _ = c.close(fd);
+        return error.ListenFailed;
+    }
+    return fd;
+}
+
+fn handleTcpConnection(fd: c_int, state: *SharedState) void {
+    defer _ = c.close(fd);
 
     var last_seq: u64 = state.currentSeq();
     var buf: [CODE_MAX]u8 = undefined;
 
     while (true) {
         if (state.readSince(&buf, &last_seq)) |data| {
-            if (c.write(conn.handle, data.ptr, data.len) < 0) break;
+            if (c.write(fd, data.ptr, data.len) < 0) break;
         }
-        std.Thread.sleep(20 * std.time.ns_per_ms);
+        sleepNs(20 * std.time.ns_per_ms);
     }
 }
 
 fn runTcpMode() !void {
     std.debug.print("[bridge] starting TCP server on 0.0.0.0:{d}...\n", .{TCP_PORT});
-    const address = try std.net.Address.parseIp("0.0.0.0", TCP_PORT);
-    var server = try std.net.Address.listen(address, .{ .reuse_address = true });
-    defer server.deinit();
+    const fd = try listenOn("0.0.0.0", TCP_PORT);
+    defer _ = c.close(fd);
 
     var state = SharedState{};
     const reader_thread = try std.Thread.spawn(.{}, serialReaderTask, .{&state});
     reader_thread.detach();
 
     while (true) {
-        const conn = server.accept() catch |err| {
-            std.debug.print("[bridge] accept error: {}\n", .{err});
-            std.Thread.sleep(std.time.ns_per_s);
+        const client = c.accept(fd, null, null);
+        if (client < 0) {
+            std.debug.print("[bridge] accept error\n", .{});
+            sleepNs(std.time.ns_per_s);
             continue;
-        };
+        }
         std.debug.print("[bridge] client connected\n", .{});
 
-        const thread = std.Thread.spawn(.{}, handleTcpConnection, .{ conn.stream, &state }) catch |err| {
+        const thread = std.Thread.spawn(.{}, handleTcpConnection, .{ client, &state }) catch |err| {
             std.debug.print("[bridge] failed to spawn handler: {}\n", .{err});
-            conn.stream.close();
+            _ = c.close(client);
             continue;
         };
         thread.detach();
@@ -223,7 +288,7 @@ fn handleSse(fd: c_int, state: *SharedState) void {
             const msg = std.fmt.bufPrint(&msg_buf, "data: {s}\n\n", .{data}) catch continue;
             if (c.write(fd, msg.ptr, msg.len) < 0) break;
         }
-        std.Thread.sleep(50 * std.time.ns_per_ms);
+        sleepNs(50 * std.time.ns_per_ms);
     }
 }
 
@@ -248,54 +313,59 @@ fn parseHttpPath(request: []const u8) ?[]const u8 {
     return first_line[method_end + 1 .. path_end];
 }
 
-fn handleHttpConnection(conn: std.net.Stream, state: *SharedState) void {
-    defer conn.close();
+fn handleHttpConnection(fd: c_int, state: *SharedState) void {
+    defer _ = c.close(fd);
 
     var buf: [8192]u8 = undefined;
-    const n = c.read(conn.handle, &buf, buf.len);
+    const n = c.read(fd, &buf, buf.len);
     if (n <= 0) return;
 
     const path = parseHttpPath(buf[0..@as(usize, @intCast(n))]) orelse return;
 
     if (std.mem.eql(u8, path, "/stream")) {
-        handleSse(conn.handle, state);
+        handleSse(fd, state);
     } else if (std.mem.eql(u8, path, "/latest")) {
-        handleLatest(conn.handle, state);
+        handleLatest(fd, state);
     } else if (std.mem.eql(u8, path, "/health")) {
-        sendHttpOk(conn.handle, "text/plain", "OK");
+        sendHttpOk(fd, "text/plain", "OK");
     } else {
-        handleIndex(conn.handle);
+        handleIndex(fd);
     }
 }
 
-fn runHttpMode(addr: std.net.Address) !void {
-    std.debug.print("[bridge] starting HTTP server on {f}\n", .{addr});
+fn runHttpMode(host: []const u8, port: u16) !void {
+    std.debug.print("[bridge] starting HTTP server on {s}:{d}...\n", .{ host, port });
 
     var state = SharedState{};
 
     const reader_thread = try std.Thread.spawn(.{}, serialReaderTask, .{&state});
     reader_thread.detach();
 
-    var server = try std.net.Address.listen(addr, .{ .reuse_address = true });
-    defer server.deinit();
+    const fd = try listenOn(host, port);
+    defer _ = c.close(fd);
 
     while (true) {
-        const conn = server.accept() catch |err| {
-            std.debug.print("[bridge] accept error: {}\n", .{err});
-            std.Thread.sleep(std.time.ns_per_s);
+        const client = c.accept(fd, null, null);
+        if (client < 0) {
+            std.debug.print("[bridge] accept error\n", .{});
+            sleepNs(std.time.ns_per_s);
+            continue;
+        }
+
+        const thread = std.Thread.spawn(.{}, handleHttpConnection, .{ client, &state }) catch |err| {
+            std.debug.print("[bridge] failed to spawn handler: {}\n", .{err});
+            _ = c.close(client);
             continue;
         };
-
-        const thread = try std.Thread.spawn(.{}, handleHttpConnection, .{ conn.stream, &state });
         thread.detach();
     }
 }
 
 // ---- CLI ----
 
-pub fn main() !u8 {
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+pub fn main(init: std.process.Init) !u8 {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    defer init.arena.allocator().free(args);
 
     var serve_mode = false;
     var serve_addr: []const u8 = "http://0.0.0.0:8080";
@@ -320,7 +390,6 @@ pub fn main() !u8 {
     }
 
     if (serve_mode) {
-        var addr_buf: [128]u8 = undefined;
         const addr_str = if (std.mem.startsWith(u8, serve_addr, "http://"))
             serve_addr[7..]
         else if (std.mem.startsWith(u8, serve_addr, "https://"))
@@ -339,13 +408,10 @@ pub fn main() !u8 {
             return 1;
         };
 
-        const host_z = try std.fmt.bufPrint(&addr_buf, "{s}", .{host});
-        const address = std.net.Address.parseIp(host_z, port) catch {
-            std.debug.print("[bridge] could not resolve address '{s}'\n", .{host});
+        runHttpMode(host, port) catch {
+            std.debug.print("[bridge] could not start HTTP server on '{s}'\n", .{host});
             return 1;
         };
-
-        try runHttpMode(address);
     } else {
         try runTcpMode();
     }

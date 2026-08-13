@@ -18,6 +18,9 @@
 - `scripts/install_autostart.bat` — creates scheduled tasks (USB attach, bridge, xemonitor)
 - `scripts/uninstall_autostart.bat` — removes the scheduled tasks
 - `status_bridge.bat` — bridge service + xemonitor status
+- `.github/workflows/release.yml` — GitHub Actions workflow: tags `v*` → build musl estático (x86_64-linux, ReleaseSafe) → tarball `xemonitor-linux-x86_64.tar.gz` + sha256 → publica Release
+- `install.sh` — instalador Linux (`curl -LsSf | bash`): baixa a última Release, instala `xemonitor`/`xemonitor-bridge` em `/usr/local/bin`, regra udev CH340, grupos `uucp,dialout`, serviço systemd ou OpenRC; flags `--prefix`/`--no-service` e overrides `XEMONITOR_VERSION`/`XEMONITOR_BASE_URL`
+- Versionamento SemVer **v0.<recurso>.<correção>** — primeira tag: v0.1.0
 
 ### Changed
 - Replaced all `std.debug.print` calls with `logPrint()` for unified logging
