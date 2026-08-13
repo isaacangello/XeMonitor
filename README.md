@@ -1,6 +1,21 @@
 # XeMonitor &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [🇧🇷 Português](README.pt-BR.md)
 
+> **Barcode scanner → virtual keyboard.** Turns any USB-Serial barcode scanner (e.g. Honeywell Granit 1900) into a USB keyboard wedge on Windows and Linux.
+
 A **Zig** application that reads barcodes from a scanner (e.g. Honeywell 1900 / Granit) and injects the received content as keyboard input into the operating system — effectively turning it into a "virtual keyboard" usable in any program.
+
+*Keywords: barcode scanner software, Honeywell 1900, Honeywell Granit, USB serial barcode scanner, CH340, USB to serial adapter, keyboard wedge, scan to keyboard, code barre.*
+
+## Supported hardware
+
+Works with any device that outputs text over a **serial/COM port** (default `115200 8N1`, configurable) terminated by `\r`/`\n`:
+
+- **Honeywell Granit 1900 / 1980 / 1990** (via CH340 USB-Serial adapter) — the reference hardware
+- **Honeywell Xenon 1900 / 1902 / 1950**, **Voyager / Orbit / Solaris** serial models
+- Any **USB-Serial barcode scanner** using a CH340, CP210x or FTDI adapter
+- **RFID / badge readers, OBD readers** and other serial devices that emit text lines
+
+If your scanner enumerates as a **serial/COM port** (not a USB-HID keyboard), XeMonitor can read it. USB-HID scanners already act as a native keyboard and need no software.
 
 ## How it works
 

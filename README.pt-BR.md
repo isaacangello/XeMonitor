@@ -1,6 +1,21 @@
 # XeMonitor &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; [🇺🇸 English](README.md)
 
+> **Leitor de código de barras → teclado virtual.** Transforma qualquer leitor de código de barras USB-Serial (ex.: Honeywell Granit 1900) em um teclado (keyboard wedge) no Windows e Linux.
+
 Aplicação em **Zig** que lê códigos de barras de um scanner (ex.: Honeywell 1900 / Granit) e injeta o conteúdo recebido como teclado no sistema operacional — virando um "teclado virtual" utilizável em qualquer programa.
+
+*Palavras-chave: software leitor de código de barras, Honeywell 1900, Honeywell Granit, leitor USB serial, CH340, adaptador USB serial, keyboard wedge, escanear para teclado.*
+
+## Hardware suportado
+
+Funciona com qualquer dispositivo que emita texto por **porta serial/COM** (padrão `115200 8N1`, configurável) com fim de linha `\r`/`\n`:
+
+- **Honeywell Granit 1900 / 1980 / 1990** (via adaptador USB-Serial CH340) — o hardware de referência
+- **Honeywell Xenon 1900 / 1902 / 1950**, modelos seriais **Voyager / Orbit / Solaris**
+- Qualquer **leitor de código de barras USB-Serial** com adaptador CH340, CP210x ou FTDI
+- **Leitores RFID / crachá, leitores OBD** e outros dispositivos seriais que emitem linhas de texto
+
+Se o seu leitor aparecer como **porta serial/COM** (não como teclado USB-HID), o XeMonitor consegue ler. Leitores USB-HID já funcionam como teclado nativo e não precisam de software.
 
 ## Fluxo de funcionamento
 
