@@ -24,6 +24,7 @@ jobs:
           mkdir -p /opt/zig && tar -xJf /tmp/zig.tar.xz -C /opt/zig --strip-components=1
           echo "/opt/zig" >> "$GITHUB_PATH"
           /opt/zig/zig version
+          mkdir -p ~/.cache/zig/tmp
 
       - name: Build xemonitor (x86_64-linux-musl)
         run: zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
