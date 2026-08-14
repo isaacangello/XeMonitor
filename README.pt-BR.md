@@ -30,7 +30,7 @@ Scanner USB-Serial (CH340) → WSL2 lê /dev/ttyUSB0 → bridge TCP :9000
 
 ### Linux
 
-O bridge pode rodar localmente e o `xemonitor` injeta via **ydotool** (Wayland) ou **xdotool** (X11).
+O bridge pode rodar localmente e o `xemonitor` injeta via **teclado virtual nativo `/dev/uinput`** (padrão, sem ferramentas extras), com fallback para `ydotool` (Wayland) ou `xdotool` (X11) quando indisponível (`--inject uinput|ydotool|xdotool`).
 
 ## Características
 
@@ -39,12 +39,16 @@ O bridge pode rodar localmente e o `xemonitor` injeta via **ydotool** (Wayland) 
 - **Modo stdin** (`--stdin`) para pipe de outras fontes.
 - **Injeção de teclado**:
   - Windows: `SendInput` nativo (Win32) com `KEYEVENTF_UNICODE` — sem PowerShell/clipboard.
-  - Linux Wayland: `ydotool`.
-  - Linux X11: `xdotool`.
+  - Linux: teclado virtual nativo `/dev/uinput` (padrão) — sem precisar de ydotool/xdotool;
+    fallback automático para `ydotool` (Wayland) / `xdotool` (X11), override com `--inject`.
 - Envia `Enter` (`VK_RETURN`) logo após o texto injetado.
 - Reconexão automática em caso de desconexão (serial ou TCP).
-- Logs em `xemonitor.log` (`[scan] '...'`, `[info] injected '...'`, `[info] enter sent`).
-- Ícone de bandeja **opt-in** (`--tray`), desligado por padrão.
+- **Pasta central de config/log**: `~/.config/xemonitor` (Linux) / `%APPDATA%\xemonitor`
+  (Windows) — `xemonitor.log`, pids e `xemonitor-gui.conf` moram todos lá
+  (override `XEMONITOR_CONFIG_DIR`; fallback para o diretório atual).
+- **GUI Linux** (`xemonitor-gui`, DVUI+SDL3): ícone da janela (X11 via
+  `SDL_SetWindowIcon`; Wayland via `.desktop`), bandeja (opt-in `--tray`, padrão
+  desligado) e autostart no login via XDG (`~/.config/autostart/xemonitor.desktop`).
 
 ## Instalação
 
@@ -56,13 +60,18 @@ Instalador oficial (baixa o binário da última GitHub Release e configura tudo 
 curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
 ```
 
-- Instala `xemonitor` e `xemonitor-bridge` em `/usr/local/bin`.
+- Instala `xemonitor`, `xemonitor-bridge` e `xemonitor-gui` em `/usr/local/bin`.
 - Cria a regra udev `99-ch340.rules` (`MODE="0666"`).
 - Adiciona o usuário aos grupos `uucp` e `dialout`.
-- Instala e inicia o serviço `xemonitor-bridge` (systemd ou OpenRC).
+- Instala e inicia o serviço `xemonitor-bridge` (systemd ou OpenRC) — já inicia com o sistema.
+- Instala o `.desktop` do app, o autostart XDG (GUI inicia no login) e um
+  `~/.config/xemonitor/xemonitor-gui.conf` padrão (`auto_start=true`).
+- Também instala a unit systemd de usuário opcional
+  (`/etc/systemd/user/xemonitor-gui.service`) para quem preferir ao autostart:
+  `systemctl --user enable xemonitor-gui.service`.
 - Requer `sudo` (ou rodar como root).
 
-Alternativa local (desenvolvedor): `zig build bridge` + `zig-out/bin/xemonitor`.
+Alternativa local (desenvolvedor): `zig build gui` + `zig-out/bin/xemonitor-gui` (ver `run_xemonitor.sh`).
 
 ### Windows
 
@@ -70,7 +79,8 @@ Alternativa local (desenvolvedor): `zig build bridge` + `zig-out/bin/xemonitor`.
 2. Prepare o WSL2 (Arch) com o bridge: ver `scripts/install_bridge_service.sh` e `setup_usb.bat`.
 3. Rode `run_bridge.bat` (USB attach via usbipd → serviço systemd do bridge → `xemonitor.exe --tcp` + Bloco de Notas).
 
-> Instalador Windows (wizard next-next-finish) está no roadmap.
+> Instalador Windows (wizard next-next-finish) está no roadmap — instruções de build e
+> setup do wizard em [docs/windows-installer.md](docs/windows-installer.md).
 
 ## Compilar
 
@@ -94,6 +104,7 @@ xemonitor --tcp <HOST:PORT>  (lê de TCP em vez de serial)
 xemonitor --stdin           (lê de stdin)
 xemonitor --tray            (ícone de bandeja; desligado por padrão)
 xemonitor --kill            (encerra uma instância em execução)
+xemonitor --inject <uinput|ydotool|xdotool>  (injetor de teclado no Linux; padrão uinput)
 ```
 
 Exemplos:
@@ -127,7 +138,7 @@ Baud rate configurável via `XEMONITOR_BAUD` (padrão: `115200`), serial `8N1` s
 ## Release / versionamento
 
 - **Versionamento**: SemVer `v0.<recurso>.<correção>` — recurso novo aumenta o número do meio (`v0.1.0 → v0.2.0`); correção aumenta o último (`v0.2.0 → v0.2.1`).
-- Tags `v*` disparam o workflow `.github/workflows/release.yml`, que builda os binários **musl estático** (x86_64-linux, ReleaseSafe) e publica `xemonitor-linux-x86_64.tar.gz` na GitHub Release.
+- Tags `v*` disparam o workflow `.github/workflows/release.yml`, que builda os binários **musl estático** (x86_64-linux, ReleaseSafe) + **`xemonitor-gui`** (x86_64-linux-gnu, SDL3 de fonte + dbus do sistema) e publica `xemonitor-linux-x86_64.tar.gz` na GitHub Release.
 - O binário musl estático roda tanto em sistemas glibc (Arch/CachyOS/Debian) quanto musl (Alpine) — um único artefato para host Linux e WSL Alpine.
 - Releases: https://github.com/isaacangello/XeMonitor/releases
 
@@ -136,11 +147,21 @@ Baud rate configurável via `XEMONITOR_BAUD` (padrão: `115200`), serial `8N1` s
 ```
 src/main.zig          → app principal (serial/TCP/stdin + injeção de teclado)
 src/bridge.zig        → bridge Linux/WSL2 (TCP raw :9000 e HTTP :8080)
+src/gui.zig           → GUI Linux (SDL3 + dvui): janela + config + controle bridge/cliente
+src/tray.zig          → bandeja Linux (SNI via D-Bus + menu dbusmenu)
+src/icon.zig          → ícone procedural da bandeja (barcode 24x24)
+src/uinput.zig        → injetor Linux nativo /dev/uinput
+src/paths.zig         → resolução do diretório central de config (Linux ~/.config, Windows %APPDATA%)
 src/bridge.py         → bridge Python legado (stdlib-only)
 src/index.html        → página embutida do modo HTTP do bridge
-build.zig             → build script (exe + bridge + testes)
+assets/xemonitor.desktop → desktop entry (ícone da janela/menu, Wayland)
+build.zig             → build script (exe + bridge + gui + testes)
 install.sh            → instalador Linux (curl | bash)
-.github/workflows/release.yml → CI/CD: tags v* → build musl → GitHub Release
+diagnose_xemonitor.sh → diagnóstico/auto-recuperação do host Linux (--check, --fix, --test-serial)
+.github/workflows/release.yml → CI/CD: tags v* → build musl + gui → GitHub Release
+run_xemonitor.sh      → (Linux) bridge systemd + GUI com bandeja (auto_start)
+stop_xemonitor.sh     → (Linux) mata GUI + cliente + para o bridge
+status_xemonitor.sh   → (Linux) status serviço/GUI/cliente/serial + pasta de config
 run_bridge.bat        → USB attach + bridge (systemd) + xemonitor + Bloco de Notas
 stop_bridge.bat       → encerra bridge + xemonitor
 status_bridge.bat     → status do serviço bridge + xemonitor
@@ -149,13 +170,15 @@ setup_wsl.sh          → setup udev + módulos usbip + wsl.conf
 scripts/install_bridge_service.sh → instala unit systemd do bridge
 scripts/install_autostart.bat     → tarefas agendadas (USB/bridge/xemonitor)
 scripts/uninstall_autostart.bat   → remove tarefas agendadas
-systemd/xemonitor-bridge.service  → unit systemd do bridge
+systemd/xemonitor-bridge.service  → unit systemd do bridge (sistema)
+systemd/xemonitor-gui.service     → unit systemd de usuário opcional do GUI
+docs/windows-installer.md → guia do instalador Windows (wizard next-next-finish)
 TODO.md / AGENTS.md / CHANGELOG.md → plano / contexto / changelog
 ```
 
 ## Logs esperados
 
-Ao escanear, o log (`xemonitor.log`) mostra:
+Ao escanear, o log (`~/.config/xemonitor/xemonitor.log` no Linux, `%APPDATA%\xemonitor\xemonitor.log` no Windows) mostra:
 
 - `[scan] '7898121840147'` — conteúdo lido (completo, sem bytes soltos).
 - `[info] injected '...'` — sucesso do `SendInput`.
@@ -173,8 +196,11 @@ Use o fluxo via bridge TCP no WSL2 (`run_bridge.bat`). Diagnóstico do driver: r
 `SendInput` funciona Médio→Médio; retorna 0 se o alvo for de integridade maior. Rode o `xemonitor` e o editor alvo **não elevados**.
 
 ### Sem injeção no Linux
-- Wayland: confirme `ydotool` (e o socket `/run/user/.../.ydotool_socket`).
-- X11: confirme `xdotool`.
+- O injetor padrão usa `/dev/uinput` — confira se o device existe e se seu usuário está no
+  grupo `input` (regra `MODE="0660"` ou `usermod -aG input $USER`, depois relogin).
+- Se o uinput falhar, há fallback automático para `ydotool` (Wayland) / `xdotool` (X11);
+  force um deles com `--inject <uinput|ydotool|xdotool>`.
+- Wayland: confirme o socket `/run/user/.../.ydotool_socket` quando usar ydotool.
 - O texto é digitado onde está o foco — o log `injected` não garante foco no editor.
 
 ### Bridge não abre `/dev/ttyUSB0`

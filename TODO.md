@@ -2,6 +2,43 @@
 
 Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 
+## Organização v0.2.0 (sessão atual)
+> Alvo: pasta central de config/log, GUI com layout/ícone melhores, autostart e
+> instruções do instalador Windows.
+
+### Código
+- [x] **Layout do GUI**: lista de scans/logs em nova linha abaixo de "Histórico (últimos scans)" (box horizontal do cabeçalho fechado com bloco `{}`; botões Copiar/Exportar não roubam mais a coluna esquerda)
+- [x] **`src/paths.zig`** (novo): `openConfigDir` + `joinPath` — resolve/cria Linux `~/.config/xemonitor` (ou `$XDG_CONFIG_HOME`), Windows `%APPDATA%\xemonitor` (fallback `%LOCALAPPDATA%`), override `XEMONITOR_CONFIG_DIR`, fallback cwd
+- [x] **`src/main.zig`**: `xemonitor.log`, `xemonitor.pid`, `xemonitor_tray.pid` → pasta central (via `paths`)
+- [x] **`src/gui.zig`**: `xemonitor-gui.conf`, `xemonitor-gui.pid`, `log_path` padrão → pasta central; `setWindowIcon()` (SDL3, barras do barcode; X11 via `SDL_SetWindowIcon`, Wayland via `.desktop`)
+
+### Scripts / instalação
+- [x] `run_xemonitor.sh`: `CFG_DIR="${XEMONITOR_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/xemonitor}"`; cria pasta; config + log no `$CFG_DIR`
+- [x] `status_xemonitor.sh`: reporta pasta central + arquivos (tamanhos) + tail do log
+- [x] `status_bridge.bat`: reporta `%APPDATA%\xemonitor` + tail do log
+- [x] `install.sh` → **1.1.0**: instala `xemonitor-gui`, `.desktop` (share/applications), autostart XDG, `~/.config/xemonitor` + config padrão, unit systemd de usuário opcional; resumo atualizado
+- [x] `.github/workflows/release.yml`: `zig build gui -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe` (apt `libsdl3-dev libdbus-1-dev`) + `xemonitor-gui` no tarball
+
+### Autostart (Q2 — "os dois")
+- [x] Autostart XDG no login: `~/.config/autostart/xemonitor.desktop` (via install.sh)
+- [x] Unit systemd de usuário opcional: `systemd/xemonitor-gui.service` → `/etc/systemd/user/` (não habilitada por padrão p/ não duplicar com autostart)
+
+### Instalador Windows (instruções)
+- [x] `docs/windows-installer.md`: wizard next-next-finish (Inno Setup recomendado) + como foi feito antes (scripts .bat/`install_autostart.bat` + tarefas agendadas `/rl LIMITED`)
+
+### Docs
+- [x] `CHANGELOG.md` (seção Unreleased v0.2.0), `README.md`, `README.pt-BR.md`, `AGENTS.md`, este `TODO.md`
+- [x] `assets/xemonitor.desktop` (Entry Type=Application, `Icon=xemonitor`)
+
+### Verificação
+- [x] Rebuild `zig build` + `zig build gui` + `zig build test` — verdes (exit 0) após todos os edits
+- [x] `XEMONITOR_CONFIG_DIR=/tmp/cfgtest`: cliente (`--stdin`) criou `/tmp/cfgtest/xemonitor/xemonitor.log` + `xemonitor.pid`, com `[scan]`/`[info] injected`/`enter sent`
+- [x] GUI com config pré-escrita no cfg dir: abriu/renderizou (dvui 720x520), ícone OK, watchdog rodou (`computeBridgeStatus`), pid criado/removido no cleanup; saveConfig na saída limpa
+- [x] `status_xemonitor.sh` com a estrutura nova (reporta `~/.config/xemonitor`, serviço, GUI, cliente, serial, grupos); `bash -n` nos `.sh` OK
+- [x] `run_xemonitor.sh`: `bash -n` OK (execução interativa fica p/ o usuário — inicia bridge root + GUI em foreground)
+- [x] Observação: no smoke test o `stopBridge` do deinit do GUI (modo `systemd-system`, `pkexec systemctl stop`) parou o bridge — comportamento pré-existente (fora do escopo v0.2.0)
+
+
 ## Infra / Git (concluído)
 - [x] Tarefa agendada `init Docker WSL` ajustada (Boot + Logon) para iniciar WSL/Arch e garantir Docker via systemd
 - [x] Docker ativo no WSL (v29.4.3, `systemctl enable docker`)
@@ -58,6 +95,19 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 - [x] Scan físico `7898121840147` → `[scan] '7898121840147'` completo, `[info] injected '...'`, `[info] enter sent`; texto chegou no editor
 - [x] **Bridge sob systemd (Linux)**: unit de usuário `~/.config/systemd/user/xemonitor-bridge.service` (`ExecStart=/usr/bin/sg uucp -c '...bridge'`; wrapper dispensa re-login) → `systemctl --user enable --now` → `active`, serial aberto, porta 9000, scan OK
 - [x] Nota: para abrir `/dev/ttyUSB0` sem re-login, usar `sg uucp -c '...'` (grupo `uucp` adicionado mas sessão antiga não o herdou)
+
+## GUI Linux (dvui) — correções de sessão
+- [x] **Toggle da bandeja não funcionava**: o loop principal bloqueava para sempre em `SDL_WaitEvent(null)` quando ocioso (`win.waitTime(end_micros)` retorna `maxInt(u32)` com `end_micros == null` → `waitEventTimeout(maxInt)` → `SDL_WaitEvent(null)`). Fix: `waitEventTimeout(@min(wait_event_micros, 250_000))` (poll de 250ms) em `gui.zig`. Validado via D-Bus `Activate` → `hidden=true/false=true` (3 alternâncias).
+- [x] **Texto sobreposto no campo host:porta**: `dvui.textEntry()` deixa o widget como pai corrente (só restaurado no `deinit()`) → o `labelNoFmt("  :  ")` e o `te_port` eram criados **dentro do textLayout interno do `te_host`** (confirmado: parent=`TextEntryWidget.zig:213`, rect `x=-6,y=-6`). Fix: `te.deinit()` imediato (padrão dos exemplos do dvui — textEntry deve ser último filho), restaura o pai para a row. Agora `tPort rect={x=215,y=0,w=82,h=38}` ao lado do host (`{x=0,w=182}`), sem sobreposição, sem erro de `parentReset`.
+- [x] `zig build gui` + `zig build test` passando (exit 0)
+
+## GUI Linux — ícone da bandeja + export (sessão atual)
+- [x] **Ícone barcode branco** em `src/icon.zig` (24x24 procedural; barras eram pretas → invisíveis no painel KDE; agora 255,255,255)
+- [x] **`IconName` "system-run" → "xemonitor"** em `src/tray.zig` (GetAll + Get) — KDE resolvia do tema e ignorava o pixmap
+- [x] **Botões de export** no `renderHistoryPanel`: **"Copiar"** (wl-copy via `.stdin=.pipe`; escopo = últimos 200 em memória, código por linha, sem prefixo) e **"Exportar arquivo"** (zenity `--file-selection --save`)
+- [x] Fix double-close no `copyToClipboard` (`child.stdin = null` antes do `wait` — panic BADF no Zig 0.16)
+- [x] Validado: clipboard (wl-paste), arquivo texto, SNI registrado, barcode branco visível após expandir itens ocultos do KDE; código temporário de teste removido
+- [x] `zig build gui` + `zig build test` passando (exit 0)
 
 ## Migração WSL: Arch/systemd → Alpine/OpenRC (quando voltar ao Windows)
 > Bridge é **musl estático** (provado via `readelf`: sem dynamic interpreter) → roda em Alpine sem recompilar. O trabalho é de **init + scripts**, não de código.

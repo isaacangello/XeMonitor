@@ -1,6 +1,44 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0] — 2026-08-14
+
+### Added
+- **Injetor Linux nativo** — novo `src/uinput.zig` cria teclado virtual em
+  `/dev/uinput` (sem dependência de ydotool/xdotool; agora o **padrão** no Linux),
+  com fallback automático para `ydotool` (Wayland) / `xdotool` (X11) e flag
+  `--inject <uinput|ydotool|xdotool>`.
+- **Config central** — novo `src/paths.zig` resolve/cria o diretório da aplicação:
+  Linux `~/.config/xemonitor` (ou `$XDG_CONFIG_HOME`), Windows `%APPDATA%\xemonitor`
+  (fallback `%LOCALAPPDATA%`), override `XEMONITOR_CONFIG_DIR` p/ testes; fallback
+  cwd. `xemonitor.log`, pids (`xemonitor.pid`, `xemonitor-gui.pid`,
+  `xemonitor_tray.pid`) e `xemonitor-gui.conf` passam a morar nesse diretório.
+- **Ícone da janela** — `setWindowIcon()` no GUI (SDL3 `SDL_CreateSurface` +
+  `SDL_SetWindowIcon`, desenho das barras do barcode); no Wayland o ícone vem do
+  `.desktop` (`assets/xemonitor.desktop` → `Icon=xemonitor`). `src/icon.zig`
+  (barcode 24x24) com o ícone procedural da bandeja.
+- **Autostart do GUI** — `install.sh` instala autostart XDG
+  (`~/.config/autostart/xemonitor.desktop`) + unit systemd de usuário opcional
+  (`systemd/xemonitor-gui.service`, `/etc/systemd/user/`, não habilitada por padrão).
+  O servidor (bridge) já inicia com o sistema via systemd/OpenRC.
+- **GUI no release** — `release.yml` passa a compilar `xemonitor-gui`
+  (`x86_64-linux-gnu`, SDL3 de fonte + dbus-1 do sistema) e incluí-lo no tarball.
+- `status_xemonitor.sh`/`status_bridge.bat` reportam a pasta central (config/log/pids)
+  e as últimas linhas do log.
+- `install.sh` 1.1.0: instala `xemonitor-gui`, `.desktop`, autostart, cria
+  `~/.config/xemonitor` com `xemonitor-gui.conf` padrão (auto_start), resumo novo.
+- `docs/windows-installer.md` — instruções do instalador Windows (wizard
+  next-next-finish, Inno Setup recomendado) e de como era feito antes (scripts .bat).
+- `diagnose_xemonitor.sh` — diagnóstico/auto-recuperação do host Linux
+  (`--check`, `--fix`, `--test-serial`), alinhado à pasta central e ao bridge systemd.
+
+### Changed
+- **Layout do GUI** — a lista de scans/logs agora fica em uma nova linha abaixo do
+  cabeçalho "Histórico (últimos scans)" (botões Copiar/Exportar não ocupam mais a
+  coluna esquerda; box horizontal fechado corretamente).
+- `run_xemonitor.sh` grava a config e o log na pasta central (`$CFG_DIR`).
+- `build.zig.zon` → `.version = "0.2.0"`.
+
+## Antes de v0.2.0 — histórico (work pré-0.2.0)
 
 ### Added
 - Native Win32 serial API (`--winapi` flag) with DTR/RTS fallback

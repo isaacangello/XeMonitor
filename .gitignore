@@ -4,10 +4,19 @@ zig-out/
 # Zig cache
 .zig-cache/
 
+# Object / artefatos de teste
+*.o
+
+# Config gerada pelos scripts de run (paths por máquina)
+xemonitor-gui.conf
+
 # Runtime logs
 *.log
 stderr.txt
 stdout.txt
+
+# PID files (centralizados na pasta de config desde v0.2.0)
+*.pid
 
 # Temp
 tmp/
