@@ -9,11 +9,17 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 pub const APP_DIR_NAME = "xemonitor";
-pub const LOG_FILE = "xemonitor.log";
+/// Prefixo do arquivo de log datado: xemonitor-YYYY-MM-DD.log
+pub const LOG_PREFIX = "xemonitor-";
 pub const GUI_CONFIG_FILE = "xemonitor-gui.conf";
 pub const CLIENT_PID_FILE = "xemonitor.pid";
 pub const GUI_PID_FILE = "xemonitor-gui.pid";
 pub const TRAY_PID_FILE = "xemonitor_tray.pid";
+
+/// Monta o nome do arquivo de log datado a partir de uma data "YYYY-MM-DD".
+pub fn datedLogName(buf: []u8, date: []const u8) []const u8 {
+    return std.fmt.bufPrint(buf, "{s}{s}.log", .{ LOG_PREFIX, date }) catch buf[0..0];
+}
 
 pub const sep: u8 = if (builtin.os.tag == .windows) '\\' else '/';
 

@@ -27,7 +27,7 @@ if %ERRORLEVEL% NEQ 0 (
 echo.
 echo ==========================================
 echo  Iniciando XeMonitor... %NO_TRAY%
-echo  Logs: xemonitor.log
+echo  Logs: xemonitor-YYYY-MM-DD.log (na pasta de config)
 echo  Para sair: Ctrl+C
 echo ==========================================
 echo.

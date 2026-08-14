@@ -8,12 +8,10 @@ echo.
 echo --- Pasta central de config/log (%%APPDATA%%\xemonitor) ---
 if exist "%APPDATA%\xemonitor" (
     echo [OK] %APPDATA%\xemonitor
-    dir /b "%APPDATA%\xemonitor" 2>nul | findstr /R "xemonitor.log xemonitor.pid xemonitor_tray.pid" >nul 2>&1
+    dir /b "%APPDATA%\xemonitor" 2>nul | findstr /R "xemonitor-.log xemonitor.log xemonitor.pid xemonitor_tray.pid" >nul 2>&1
     if %errorlevel% equ 0 (echo [OK] arquivos de log/pid presentes.) else (echo [INFO] ainda sem log/pid (rode o xemonitor).)
-    if exist "%APPDATA%\xemonitor\xemonitor.log" (
-        echo --- ultimas linhas do log ---
-        powershell -NoProfile -Command "Get-Content '%APPDATA%\xemonitor\xemonitor.log' -Tail 5"
-    )
+    rem Log rotativo por data: xemonitor-YYYY-MM-DD.log (fallback p/ legado)
+    powershell -NoProfile -Command "$d='%APPDATA%\xemonitor\xemonitor-'+(Get-Date -Format 'yyyy-MM-dd')+'.log'; if(-not (Test-Path $d)){$d='%APPDATA%\xemonitor\xemonitor.log'}; if(Test-Path $d){Write-Host '--- ultimas linhas do log ---'; Get-Content $d -Tail 5} else {Write-Host '[INFO] log ainda nao criado.'}"
 ) else (
     echo [AVISO] %%APPDATA%%\xemonitor nao existe ainda (rode o xemonitor.exe).
 )

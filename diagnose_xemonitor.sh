@@ -18,7 +18,9 @@ BIN="$REPO_DIR/zig-out/bin"
 SERIAL="/dev/ttyUSB0"
 PORT=9000
 CFG_DIR="${XEMONITOR_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/xemonitor}"
-LOG="$CFG_DIR/xemonitor.log"
+# Log rotativo por data (xemonitor-YYYY-MM-DD.log); fallback p/ legado.
+LOG="$CFG_DIR/xemonitor-$(date +%Y-%m-%d).log"
+[ -f "$LOG" ] || LOG="$CFG_DIR/xemonitor.log"
 MODE="check"
 FAIL=0
 
@@ -95,7 +97,7 @@ check_bridge() {
     if grep -q "$BIN/bridge" /proc/"$pid"/cmdline 2>/dev/null || grep -q "xemonitor-bridge" /proc/"$pid"/cmdline 2>/dev/null; then
         report OK "processo é o bridge."
     else
-        report AVISO "PID $pid não é o bridge (cmdline: $(tr '\0' ' ' < /proc/$pid/cmdline 2>/dev/null))."
+        report AVISO "PID $pid não é o bridge (cmdline: $(tr '\0' ' ' < /proc/"$pid"/cmdline 2>/dev/null))."
     fi
     echo
 }
@@ -198,7 +200,7 @@ check_injector() {
 }
 
 check_log() {
-    echo "--- xemonitor.log (último scan) ---"
+    echo "--- log (xemonitor-$(date +%Y-%m-%d).log, último scan) ---"
     if [ ! -f "$LOG" ]; then
         report AVISO "log não existe ainda ($LOG)."
         echo

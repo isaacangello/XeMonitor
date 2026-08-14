@@ -102,6 +102,7 @@ if [ ! -f /etc/systemd/system/xemonitor-bridge.service ]; then
 fi
 
 # 4. Config do GUI: systemd-system + auto_start (inicia tudo) + bandeja
+#    (log_path é só a base: o cliente escreve xemonitor-YYYY-MM-DD.log no dir)
 cat > "$CONF" <<EOF
 tcp_host=127.0.0.1
 tcp_port=$PORT

@@ -239,6 +239,50 @@ var log_mutex: std.Io.Mutex = .init;
 var log_line_start: bool = true;
 var global_io: std.Io = undefined;
 var cfg_dir: paths.ConfigDir = undefined;
+/// Data (YYYY-MM-DD) do arquivo de log atualmente aberto.
+var log_date: [10]u8 = [_]u8{0} ** 10;
+var log_date_valid: bool = false;
+
+/// Data de hoje em "YYYY-MM-DD" (usada para o arquivo de log rotativo).
+fn todayDate(buf: *[10]u8) []const u8 {
+    const now_ns = std.Io.Timestamp.now(global_io, .real).nanoseconds;
+    const secs: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_s));
+    const sec_i: ctime.time_t = @intCast(secs);
+    var tm: ctime.struct_tm = undefined;
+    if (builtin.os.tag == .windows) {
+        _ = ctime.localtime_s(&tm, &sec_i);
+    } else {
+        _ = ctime.localtime_r(&sec_i, &tm);
+    }
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+        @as(u32, @intCast(tm.tm_year + 1900)),
+        @as(u32, @intCast(tm.tm_mon + 1)),
+        @as(u32, @intCast(tm.tm_mday)),
+    }) catch buf[0..0];
+}
+
+/// Fecha o log atual e abre o arquivo datado de hoje (append). Chamado a cada
+/// escrita em `logPrint` quando o dia muda — evita um log de vários dias.
+fn openTodayLogFile() void {
+    var date_buf: [10]u8 = undefined;
+    const date = todayDate(&date_buf);
+    if (date.len < 10) return; // relogio indisponivel: mantem arquivo atual
+    if (log_file) |f| f.close(global_io);
+    log_file = null;
+    @memcpy(&log_date, date[0..10]);
+    log_date_valid = true;
+    var name_buf: [32]u8 = undefined;
+    const name = paths.datedLogName(&name_buf, date);
+    if (name.len == 0) return;
+    log_file = cfg_dir.dir.createFile(global_io, name, .{ .truncate = false }) catch null;
+    if (log_file) |f| {
+        if (f.stat(global_io)) |st| {
+            var sbuf: [1]u8 = undefined;
+            var sw = f.writerStreaming(global_io, &sbuf);
+            sw.seekTo(st.size) catch {};
+        } else |_| {}
+    }
+}
 
 fn timestampStr(buf: *[32]u8) []const u8 {
     const now_ns = std.Io.Timestamp.now(global_io, .real).nanoseconds;
@@ -307,6 +351,13 @@ fn logPrint(comptime fmt: []const u8, args: anytype) void {
     const s_out = formatTimestamped(.stderr, msg, &stderr_buf);
     std.debug.print("{s}", .{s_out});
 
+    // Log rotativo por data: verifica a cada escrita se o arquivo de hoje
+    // existe; se o dia mudou (ou ainda nao foi aberto), cria/abre o datado.
+    var date_buf: [10]u8 = undefined;
+    const date = todayDate(&date_buf);
+    if (!log_date_valid or !std.mem.eql(u8, &log_date, date)) {
+        openTodayLogFile();
+    }
     if (log_file) |f| {
         var wbuf: [1024]u8 = undefined;
         var writer = f.writerStreaming(global_io, &wbuf);
@@ -1124,17 +1175,14 @@ pub fn main(init: std.process.Init) !u8 {
     global_io = init.io;
     cfg_dir = paths.openConfigDir(init.arena.allocator(), init.environ_map, init.io);
 
-    log_file = cfg_dir.dir.createFile(global_io, paths.LOG_FILE, .{ .truncate = false }) catch null;
-    if (log_file) |f| {
-        if (f.stat(global_io)) |st| {
-            var sbuf: [1]u8 = undefined;
-            var sw = f.writerStreaming(global_io, &sbuf);
-            sw.seekTo(st.size) catch {};
-        } else |_| {}
-    }
+    openTodayLogFile();
     defer if (log_file) |f| f.close(global_io);
     var logpath_buf: [1024]u8 = undefined;
-    const logpath = std.fmt.bufPrint(&logpath_buf, "{s}{c}{s}", .{ cfg_dir.path, paths.sep, paths.LOG_FILE }) catch paths.LOG_FILE;
+    var logpath_date_buf: [10]u8 = undefined;
+    const logpath_date = todayDate(&logpath_date_buf);
+    var logpath_name_buf: [32]u8 = undefined;
+    const logpath_name = paths.datedLogName(&logpath_name_buf, logpath_date);
+    const logpath = std.fmt.bufPrint(&logpath_buf, "{s}{c}{s}", .{ cfg_dir.path, paths.sep, logpath_name }) catch logpath_name;
     logPrint("[info] log file: {s}\n", .{logpath});
 
     const cli_args = try init.minimal.args.toSlice(init.arena.allocator());

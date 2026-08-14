@@ -7,9 +7,14 @@ const paths = @import("paths.zig");
 
 const os = builtin.os.tag;
 
+const ctime = @cImport({
+    @cInclude("time.h");
+});
+
 const APP_NAME = "XeMonitor";
 const CONFIG_FILE = paths.GUI_CONFIG_FILE;
-const DEFAULT_LOG = paths.LOG_FILE;
+/// Nome-base legado; o log atual é datado (xemonitor-YYYY-MM-DD.log).
+const DEFAULT_LOG = "xemonitor.log";
 
 const ns_per_s = std.time.ns_per_s;
 
@@ -525,17 +530,44 @@ fn drainClientLines(app: *App) void {
     drained.deinit(app.gpa);
 }
 
+/// Data de hoje em "YYYY-MM-DD" (usada para o arquivo de log datado).
+fn todayDateStr(io: std.Io, buf: *[10]u8) []const u8 {
+    const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
+    const secs: u64 = @intCast(@divTrunc(now_ns, ns_per_s));
+    const sec_i: ctime.time_t = @intCast(secs);
+    var tm: ctime.struct_tm = undefined;
+    _ = ctime.localtime_r(&sec_i, &tm);
+    return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+        @as(u32, @intCast(tm.tm_year + 1900)),
+        @as(u32, @intCast(tm.tm_mon + 1)),
+        @as(u32, @intCast(tm.tm_mday)),
+    }) catch buf[0..0];
+}
+
+fn readFileOrNull(io: std.Io, gpa: std.mem.Allocator, path: []const u8) ?[]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, gpa, std.Io.Limit.limited(8 * 1024 * 1024)) catch return null;
+}
+
 fn backfillLog(app: *App) void {
     var buf: [1024]u8 = undefined;
     const is_abs = app.cfg.log_path.len > 0 and (app.cfg.log_path[0] == '/' or
         (app.cfg.log_path.len > 1 and app.cfg.log_path[1] == ':'));
-    const path = if (is_abs) app.cfg.log_path
+    const base_path = if (is_abs) app.cfg.log_path
     else std.fmt.bufPrint(&buf, "{s}{c}{s}", .{
         gui_cfg_dir.path,
         paths.sep,
         if (app.cfg.log_path.len > 0) app.cfg.log_path else DEFAULT_LOG,
     }) catch DEFAULT_LOG;
-    const data = std.Io.Dir.cwd().readFileAlloc(app.io, path, app.gpa, std.Io.Limit.limited(8 * 1024 * 1024)) catch return;
+
+    // Log atual é datado (xemonitor-YYYY-MM-DD.log); usa o legado como fallback.
+    var date_buf: [10]u8 = undefined;
+    const date = todayDateStr(app.io, &date_buf);
+    var dated_buf: [1024]u8 = undefined;
+    const last_sep = std.mem.lastIndexOfAny(u8, base_path, "/\\");
+    const dir = if (last_sep) |i| base_path[0 .. i + 1] else "";
+    const dated_path = std.fmt.bufPrint(&dated_buf, "{s}{s}{s}.log", .{ dir, paths.LOG_PREFIX, date }) catch base_path;
+    const data = readFileOrNull(app.io, app.gpa, dated_path) orelse
+        readFileOrNull(app.io, app.gpa, base_path) orelse return;
     defer app.gpa.free(data);
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |raw| {

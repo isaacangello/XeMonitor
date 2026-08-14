@@ -7,17 +7,23 @@ echo "========================================"
 echo
 
 CFG_DIR="${XEMONITOR_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/xemonitor}"
+# Log rotativo por data (xemonitor-YYYY-MM-DD.log); fallback p/ legado.
+LOG_FILE="$CFG_DIR/xemonitor-$(date +%Y-%m-%d).log"
+[ -f "$LOG_FILE" ] || LOG_FILE="$CFG_DIR/xemonitor.log"
 
 echo "--- Pasta central de config/log ---"
 echo "    $CFG_DIR"
 if [ -d "$CFG_DIR" ]; then
-    for f in xemonitor-gui.conf xemonitor-gui.pid xemonitor.pid xemonitor.log; do
+    for f in xemonitor-gui.conf xemonitor-gui.pid xemonitor.pid; do
         if [ -f "$CFG_DIR/$f" ]; then
             printf "    [OK] %-20s %8s bytes\n" "$f" "$(stat -c %s "$CFG_DIR/$f" 2>/dev/null || echo '?')"
         fi
     done
-    echo "    --- ultimas linhas do log (xemonitor.log) ---"
-    tail -n 5 "$CFG_DIR/xemonitor.log" 2>/dev/null || echo "    (log ainda nao criado)"
+    if [ -f "$LOG_FILE" ]; then
+        printf "    [OK] %-20s %8s bytes\n" "$(basename "$LOG_FILE")" "$(stat -c %s "$LOG_FILE" 2>/dev/null || echo '?')"
+    fi
+    echo "    --- ultimas linhas do log ($(basename "$LOG_FILE")) ---"
+    tail -n 5 "$LOG_FILE" 2>/dev/null || echo "    (log ainda nao criado)"
 else
     echo "    [AVISO] pasta de config ainda nao existe (roda ./run_xemonitor.sh)."
 fi
