@@ -1,6 +1,7 @@
 const std = @import("std");
 const zig_serial = @import("serial");
 const builtin = @import("builtin");
+const paths = @import("paths.zig");
 const c = if (builtin.os.tag == .windows)
     @cImport({
         @cInclude("libserialport.h");
@@ -11,6 +12,21 @@ else
     });
 const reconnect_interval_ns: u64 = 2 * std.time.ns_per_s;
 const default_port_name = if (builtin.os.tag == .windows) "COM1" else "/dev/ttyUSB0";
+
+const uinput = if (builtin.os.tag == .linux) @import("uinput.zig") else struct {
+    pub fn typeText(text: []const u8) !void {
+        _ = text;
+        return error.UnsupportedPlatform;
+    }
+    pub fn pressEnter() !void {
+        return error.UnsupportedPlatform;
+    }
+    pub fn deinit() void {}
+};
+
+const ctime = @cImport({
+    @cInclude("time.h");
+});
 
 const winapi_available = builtin.os.tag == .windows;
 const w = if (winapi_available) struct {
@@ -222,22 +238,114 @@ var log_file: ?std.Io.File = null;
 var log_mutex: std.Io.Mutex = .init;
 var log_line_start: bool = true;
 var global_io: std.Io = undefined;
+var cfg_dir: paths.ConfigDir = undefined;
+
+fn timestampStr(buf: *[32]u8) []const u8 {
+    const now_ns = std.Io.Timestamp.now(global_io, .real).nanoseconds;
+    const secs: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_s));
+    const ms: u64 = @intCast(@divTrunc(@mod(now_ns, std.time.ns_per_s), std.time.ns_per_ms));
+
+    const sec_i: ctime.time_t = @intCast(secs);
+    var tm: ctime.struct_tm = undefined;
+    if (builtin.os.tag == .windows) {
+        _ = ctime.localtime_s(&tm, &sec_i);
+    } else {
+        _ = ctime.localtime_r(&sec_i, &tm);
+    }
+    return std.fmt.bufPrint(buf, "[{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}] ", .{
+        @as(u8, @intCast(tm.tm_hour)),
+        @as(u8, @intCast(tm.tm_min)),
+        @as(u8, @intCast(tm.tm_sec)),
+        ms,
+    }) catch "";
+}
+
+const TimestampedTarget = enum { stderr, file };
+
+// Formata msg inserindo timestamp no inicio de cada linha (e, para o arquivo,
+// mantem o prefixo "cmd_stdout: "). Preserva a estrutura de '\n' embutida.
+fn formatTimestamped(target: TimestampedTarget, msg: []const u8, out: []u8) []const u8 {
+    var len: usize = 0;
+    var at_line_start = log_line_start;
+    var i: usize = 0;
+    while (i < msg.len) : (i += 1) {
+        if (at_line_start) {
+            var tbuf: [32]u8 = undefined;
+            const ts = timestampStr(&tbuf);
+            for (ts) |ch| {
+                if (len >= out.len) return out[0..len];
+                out[len] = ch;
+                len += 1;
+            }
+            if (target == .file) {
+                for ("cmd_stdout: ") |ch| {
+                    if (len >= out.len) return out[0..len];
+                    out[len] = ch;
+                    len += 1;
+                }
+            }
+            at_line_start = false;
+        }
+        const ch = msg[i];
+        if (len >= out.len) return out[0..len];
+        out[len] = ch;
+        len += 1;
+        if (ch == '\n') at_line_start = true;
+    }
+    log_line_start = if (msg.len == 0) log_line_start else (msg[msg.len - 1] == '\n');
+    return out[0..len];
+}
 
 fn logPrint(comptime fmt: []const u8, args: anytype) void {
     log_mutex.lock(global_io) catch {};
     defer log_mutex.unlock(global_io);
-    std.debug.print(fmt, args);
+
+    var msgbuf: [2048]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msgbuf, fmt, args) catch return;
+
+    var stderr_buf: [4096]u8 = undefined;
+    const s_out = formatTimestamped(.stderr, msg, &stderr_buf);
+    std.debug.print("{s}", .{s_out});
+
     if (log_file) |f| {
         var wbuf: [1024]u8 = undefined;
         var writer = f.writerStreaming(global_io, &wbuf);
-        if (log_line_start) {
-            writer.interface.writeAll("cmd_stdout: ") catch {};
-            log_line_start = false;
-        }
-        writer.interface.print(fmt, args) catch {};
+        var file_buf: [4096]u8 = undefined;
+        const f_out = formatTimestamped(.file, msg, &file_buf);
+        writer.interface.writeAll(f_out) catch {};
         writer.interface.flush() catch {};
-        if (fmt.len > 0 and fmt[fmt.len - 1] == '\n') log_line_start = true;
     }
+}
+
+const CLIENT_PID_FILE = paths.CLIENT_PID_FILE;
+
+fn pidAlive(pid: u32) bool {
+    if (builtin.os.tag != .linux) return false;
+    const r = std.posix.kill(@intCast(pid), @enumFromInt(0));
+    return !std.meta.isError(r);
+}
+
+fn writeClientPidFile() void {
+    if (builtin.os.tag != .linux) return;
+    if (cfg_dir.dir.createFile(global_io, paths.CLIENT_PID_FILE, .{})) |pid_file| {
+        var fmt_buf: [32]u8 = undefined;
+        const pid_str = std.fmt.bufPrint(&fmt_buf, "{d}\n", .{std.os.linux.getpid()}) catch "0\n";
+        var wbuf: [32]u8 = undefined;
+        var writer = pid_file.writer(global_io, &wbuf);
+        writer.interface.writeAll(pid_str) catch {};
+        writer.interface.flush() catch {};
+        pid_file.close(global_io);
+    } else |err| {
+        logPrint("[warn] could not write client PID file: {}\n", .{err});
+    }
+}
+
+fn linuxInstanceRunning() bool {
+    var buf: [32]u8 = undefined;
+    const data = cfg_dir.dir.readFile(global_io, paths.CLIENT_PID_FILE, &buf) catch return false;
+    const s = std.mem.trim(u8, data, " \t\r\n");
+    const pid = std.fmt.parseInt(u32, s, 10) catch return false;
+    return pid > 0 and pidAlive(pid);
 }
 
 const PortSource = enum {
@@ -268,6 +376,7 @@ const CliOptions = struct {
     use_stdin: bool = false,
     tray: bool = false,
     kill_existing: bool = false,
+    inject: ?[]u8 = null,
 };
 
 fn printUsage() void {
@@ -281,6 +390,7 @@ fn printUsage() void {
         \\  xemonitor --stdin           (read from stdin)
         \\  xemonitor --tray            (enable system tray icon; off by default)
         \\  xemonitor --kill            (terminate a running instance)
+        \\  xemonitor --inject <uinput|ydotool|xdotool>  (Linux keyboard injector; default uinput)
         \\
         \\Examples:
         \\  xemonitor --port COM4
@@ -323,6 +433,20 @@ fn parseCliOptions(allocator: std.mem.Allocator, args: []const [:0]const u8) !Cl
 
         if (std.mem.eql(u8, arg, "--stdin")) {
             options.use_stdin = true;
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--inject")) {
+            if (i + 1 >= args.len) return error.InvalidArgument;
+            i += 1;
+            if (!std.mem.eql(u8, args[i], "uinput") and
+                !std.mem.eql(u8, args[i], "ydotool") and
+                !std.mem.eql(u8, args[i], "xdotool"))
+            {
+                logPrint("[error] --inject espera 'uinput', 'ydotool' ou 'xdotool'.\n", .{});
+                return error.InvalidArgument;
+            }
+            options.inject = try allocator.dupe(u8, args[i]);
             continue;
         }
 
@@ -407,7 +531,7 @@ const TrayIcon = struct {
                 });
                 self.child = child;
 
-                if (std.Io.Dir.cwd().createFile(global_io, "xemonitor_tray.pid", .{})) |pid_file| {
+                if (cfg_dir.dir.createFile(global_io, paths.TRAY_PID_FILE, .{})) |pid_file| {
                     var buf: [32]u8 = undefined;
                     var writer = pid_file.writer(global_io, &buf);
                     const pid = w.GetProcessId(child.id.?);
@@ -432,7 +556,7 @@ const TrayIcon = struct {
             _ = child.wait(global_io) catch {};
             self.child = null;
         }
-        std.Io.Dir.cwd().deleteFile(global_io, "xemonitor_tray.pid") catch {};
+        cfg_dir.dir.deleteFile(global_io, paths.TRAY_PID_FILE) catch {};
     }
 };
 
@@ -449,9 +573,16 @@ fn runCommand(argv: []const []const u8) !void {
 const KeyboardInjector = enum {
     windows_sendinput,
     windows_powershell,
+    linux_uinput,
     linux_wayland_ydotool,
     linux_x11_xdotool,
 };
+
+var g_is_wayland = false;
+
+fn uinputFallbackLog(err: anyerror) void {
+    logPrint("\n[warn] uinput failed ({}); falling back to {s}\n", .{ err, if (g_is_wayland) "ydotool" else "xdotool" });
+}
 
 fn simulateKeyboardInput(text: []const u8, injector: KeyboardInjector) !void {
     if (text.len == 0) return;
@@ -476,6 +607,20 @@ fn simulateKeyboardInput(text: []const u8, injector: KeyboardInjector) !void {
                 "-t",
                 text,
             });
+        },
+        .linux_uinput => {
+            if (builtin.os.tag == .linux) {
+                uinput.typeText(text) catch |err| {
+                    uinputFallbackLog(err);
+                    if (g_is_wayland) {
+                        try runCommand(&.{ "ydotool", "type", text });
+                    } else {
+                        try runCommand(&.{ "xdotool", "type", "--clearmodifiers", text });
+                    }
+                };
+                return;
+            }
+            return error.UnsupportedPlatform;
         },
         .linux_wayland_ydotool => {
             try runCommand(&.{ "ydotool", "type", text });
@@ -505,6 +650,20 @@ fn simulateEnter(injector: KeyboardInjector) !void {
                 "-Command",
                 "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{ENTER}')",
             });
+        },
+        .linux_uinput => {
+            if (builtin.os.tag == .linux) {
+                uinput.pressEnter() catch |err| {
+                    uinputFallbackLog(err);
+                    if (g_is_wayland) {
+                        try runCommand(&.{ "ydotool", "key", "28:1", "28:0" });
+                    } else {
+                        try runCommand(&.{ "xdotool", "key", "Return" });
+                    }
+                };
+                return;
+            }
+            return error.UnsupportedPlatform;
         },
         .linux_wayland_ydotool => {
             try runCommand(&.{ "ydotool", "key", "28:1", "28:0" });
@@ -963,10 +1122,20 @@ fn stripInterleavedSeparator(raw: []const u8, out: []u8) []const u8 {
 
 pub fn main(init: std.process.Init) !u8 {
     global_io = init.io;
+    cfg_dir = paths.openConfigDir(init.arena.allocator(), init.environ_map, init.io);
 
-    log_file = std.Io.Dir.cwd().createFile(global_io, "xemonitor.log", .{ .truncate = false }) catch null;
+    log_file = cfg_dir.dir.createFile(global_io, paths.LOG_FILE, .{ .truncate = false }) catch null;
+    if (log_file) |f| {
+        if (f.stat(global_io)) |st| {
+            var sbuf: [1]u8 = undefined;
+            var sw = f.writerStreaming(global_io, &sbuf);
+            sw.seekTo(st.size) catch {};
+        } else |_| {}
+    }
     defer if (log_file) |f| f.close(global_io);
-    logPrint("[info] log file: xemonitor.log\n", .{});
+    var logpath_buf: [1024]u8 = undefined;
+    const logpath = std.fmt.bufPrint(&logpath_buf, "{s}{c}{s}", .{ cfg_dir.path, paths.sep, paths.LOG_FILE }) catch paths.LOG_FILE;
+    logPrint("[info] log file: {s}\n", .{logpath});
 
     const cli_args = try init.minimal.args.toSlice(init.arena.allocator());
     const cli = parseCliOptions(std.heap.page_allocator, cli_args) catch |err| switch (err) {
@@ -990,17 +1159,19 @@ pub fn main(init: std.process.Init) !u8 {
         break :blk 115_200;
     };
     const session_type: ?[]const u8 = init.environ_map.get("XDG_SESSION_TYPE");
-    const is_wayland = if (session_type) |v| std.ascii.eqlIgnoreCase(v, "wayland") else false;
+    g_is_wayland = if (session_type) |v| std.ascii.eqlIgnoreCase(v, "wayland") else false;
     const injector: KeyboardInjector = if (builtin.os.tag == .windows)
         .windows_sendinput
-    else if (is_wayland)
-        .linux_wayland_ydotool
-    else
-        .linux_x11_xdotool;
+    else if (cli.inject) |name| blk: {
+        if (std.mem.eql(u8, name, "ydotool")) break :blk .linux_wayland_ydotool;
+        if (std.mem.eql(u8, name, "xdotool")) break :blk .linux_x11_xdotool;
+        break :blk .linux_uinput;
+    } else
+        .linux_uinput;
 
     if (cli.kill_existing) {
         if (builtin.os.tag == .windows) {
-            if (std.Io.Dir.cwd().readFileAlloc(global_io, "xemonitor_tray.pid", std.heap.page_allocator, std.Io.Limit.limited(32))) |pid_str| {
+            if (cfg_dir.dir.readFileAlloc(global_io, paths.TRAY_PID_FILE, std.heap.page_allocator, std.Io.Limit.limited(32))) |pid_str| {
                 defer std.heap.page_allocator.free(pid_str);
                 const pid = std.fmt.parseInt(u32, std.mem.trim(u8, pid_str, " \t\r\n"), 10) catch 0;
                 if (pid > 0) {
@@ -1014,7 +1185,7 @@ pub fn main(init: std.process.Init) !u8 {
                         .stderr = .ignore,
                     }) catch {};
                 }
-                std.Io.Dir.cwd().deleteFile(global_io, "xemonitor_tray.pid") catch {};
+                cfg_dir.dir.deleteFile(global_io, paths.TRAY_PID_FILE) catch {};
             } else |_| {}
             logPrint("[info] killing xemonitor.exe...\n", .{});
             _ = std.process.spawn(global_io, .{
@@ -1046,6 +1217,12 @@ pub fn main(init: std.process.Init) !u8 {
             _ = w.CloseHandle(mutex);
             return 1;
         }
+    } else if (builtin.os.tag == .linux) {
+        if (linuxInstanceRunning()) {
+            logPrint("[error] another instance of xemonitor is already running (see {s}).\n", .{CLIENT_PID_FILE});
+            return 1;
+        }
+        writeClientPidFile();
     }
 
     logPrint("serial baud rate={d}\n", .{baud_rate});
@@ -1055,10 +1232,11 @@ pub fn main(init: std.process.Init) !u8 {
         logPrint("serial backend=libserialport\n", .{});
     }
     logPrint("platform={s}, keyboard injector={s}\n", .{
-        if (builtin.os.tag == .windows) "windows" else if (is_wayland) "linux-wayland" else "linux-x11/unknown",
+        if (builtin.os.tag == .windows) "windows" else if (g_is_wayland) "linux-wayland" else "linux-x11/unknown",
         switch (injector) {
             .windows_sendinput => "sendinput (Win32)",
             .windows_powershell => "powershell+sendkeys",
+            .linux_uinput => "uinput (nativo)",
             .linux_wayland_ydotool => "ydotool",
             .linux_x11_xdotool => "xdotool",
         },
@@ -1069,6 +1247,7 @@ pub fn main(init: std.process.Init) !u8 {
         try tray.start();
     }
     defer if (cli.tray) tray.stop();
+    defer uinput.deinit();
 
     var did_report_missing_port = false;
     var last_selected_port: ?[]u8 = null;

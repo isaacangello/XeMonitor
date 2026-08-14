@@ -44,6 +44,51 @@ const BAUD: u32 = 115200;
 const SERIAL = "/dev/ttyUSB0";
 const CODE_MAX = 256;
 
+var verbose: bool = false;
+
+fn hexDump(buf: []const u8, out: []u8) []const u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < buf.len and n < out.len - 1) : (i += 1) {
+        const hi = "0123456789abcdef"[buf[i] >> 4];
+        const lo = "0123456789abcdef"[buf[i] & 0xf];
+        if (n < out.len - 2) {
+            out[n] = hi;
+            out[n + 1] = lo;
+            n += 2;
+        }
+        if (n < out.len - 1) {
+            out[n] = ' ';
+            n += 1;
+        }
+    }
+    if (n > 0) out[n - 1] = 0;
+    return out[0..@max(n - 1, 0)];
+}
+
+fn printableSum(buf: []const u8, out: []u8) []const u8 {
+    var n: usize = 0;
+    var i: usize = 0;
+    while (i < buf.len and n < out.len - 1) : (i += 1) {
+        const ch = buf[i];
+        if (ch == '\n' or ch == '\r') {
+            if (n < out.len - 2) {
+                out[n] = '\\';
+                out[n + 1] = if (ch == '\n') 'n' else 'r';
+                n += 2;
+            }
+        } else if (ch >= 32 and ch < 127) {
+            out[n] = ch;
+            n += 1;
+        } else {
+            out[n] = '.';
+            n += 1;
+        }
+    }
+    out[n] = 0;
+    return out[0..n];
+}
+
 const index_html = @embedFile("index.html");
 
 const SharedState = struct {
@@ -106,12 +151,18 @@ fn usage() void {
         \\
         \\Usage:
         \\  bridge                       raw TCP server (default port 9000)
+        \\  bridge --tcp-port <n>        raw TCP server on a custom port
         \\  bridge -s <url>              HTTP server (e.g. http://0.0.0.0:8080)
+        \\  bridge --fake-scan <ms>      push a fake 'TEST<n>' code every <ms> ms (no hardware needed)
+        \\  bridge --verbose              log every serial read (diagnostics)
         \\  bridge -h                    show this help
         \\
         \\Examples:
         \\  bridge
+        \\  bridge --tcp-port 9001
         \\  bridge -s http://0.0.0.0:8080
+        \\  bridge --fake-scan 2000
+        \\  bridge --verbose
         \\
     , .{});
 }
@@ -175,10 +226,41 @@ fn serialReaderTask(state: *SharedState) void {
                 failed = true;
                 break;
             }
-            state.update(buf[0..@as(usize, @intCast(n))]);
+            const data = buf[0..@as(usize, @intCast(n))];
+            if (verbose) {
+                var sum_buf: [128]u8 = undefined;
+                const sum = printableSum(data, &sum_buf);
+                std.debug.print("[bridge] serial read {d} bytes: '{s}'\n", .{ data.len, sum });
+                var hex_buf: [1024]u8 = undefined;
+                const hex = hexDump(data, &hex_buf);
+                std.debug.print("[bridge] serial read hex: {s}\n", .{hex});
+            }
+            state.update(data);
         }
         _ = c.close(fd);
         if (failed) sleepNs(500 * std.time.ns_per_ms);
+    }
+}
+
+fn fakeScanTask(state: *SharedState, interval_ms: u64) void {
+    var n: u64 = 0;
+    var buf: [64]u8 = undefined;
+    while (true) {
+        n +%= 1;
+        const code = std.fmt.bufPrint(&buf, "TEST{d}\r\n", .{n}) catch continue;
+        std.debug.print("[bridge] fake-scan: {s}", .{code});
+        state.update(code);
+        sleepNs(interval_ms * std.time.ns_per_ms);
+    }
+}
+
+fn spawnSourceTasks(state: *SharedState, fake_scan_ms: ?u64) !void {
+    const reader_thread = try std.Thread.spawn(.{}, serialReaderTask, .{state});
+    reader_thread.detach();
+    if (fake_scan_ms) |ms| {
+        std.debug.print("[bridge] fake-scan mode enabled (interval {d} ms)\n", .{ms});
+        const fake_thread = try std.Thread.spawn(.{}, fakeScanTask, .{ state, ms });
+        fake_thread.detach();
     }
 }
 
@@ -233,14 +315,13 @@ fn handleTcpConnection(fd: c_int, state: *SharedState) void {
     }
 }
 
-fn runTcpMode() !void {
-    std.debug.print("[bridge] starting TCP server on 0.0.0.0:{d}...\n", .{TCP_PORT});
-    const fd = try listenOn("0.0.0.0", TCP_PORT);
+fn runTcpMode(port: u16, fake_scan_ms: ?u64) !void {
+    std.debug.print("[bridge] starting TCP server on 0.0.0.0:{d}...\n", .{port});
+    const fd = try listenOn("0.0.0.0", port);
     defer _ = c.close(fd);
 
     var state = SharedState{};
-    const reader_thread = try std.Thread.spawn(.{}, serialReaderTask, .{&state});
-    reader_thread.detach();
+    try spawnSourceTasks(&state, fake_scan_ms);
 
     while (true) {
         const client = c.accept(fd, null, null);
@@ -333,13 +414,11 @@ fn handleHttpConnection(fd: c_int, state: *SharedState) void {
     }
 }
 
-fn runHttpMode(host: []const u8, port: u16) !void {
+fn runHttpMode(host: []const u8, port: u16, fake_scan_ms: ?u64) !void {
     std.debug.print("[bridge] starting HTTP server on {s}:{d}...\n", .{ host, port });
 
     var state = SharedState{};
-
-    const reader_thread = try std.Thread.spawn(.{}, serialReaderTask, .{&state});
-    reader_thread.detach();
+    try spawnSourceTasks(&state, fake_scan_ms);
 
     const fd = try listenOn(host, port);
     defer _ = c.close(fd);
@@ -369,6 +448,8 @@ pub fn main(init: std.process.Init) !u8 {
 
     var serve_mode = false;
     var serve_addr: []const u8 = "http://0.0.0.0:8080";
+    var tcp_port: u16 = TCP_PORT;
+    var fake_scan_ms: ?u64 = null;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -376,6 +457,38 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             usage();
             return 0;
+        }
+        if (std.mem.eql(u8, arg, "--fake-scan")) {
+            if (i + 1 >= args.len) {
+                std.debug.print("[bridge] --fake-scan requires an interval in ms\n", .{});
+                usage();
+                return 1;
+            }
+            i += 1;
+            fake_scan_ms = std.fmt.parseInt(u64, args[i], 10) catch {
+                std.debug.print("[bridge] invalid fake-scan interval '{s}'\n", .{args[i]});
+                usage();
+                return 1;
+            };
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--tcp-port")) {
+            if (i + 1 >= args.len) {
+                std.debug.print("[bridge] --tcp-port requires a port number\n", .{});
+                usage();
+                return 1;
+            }
+            i += 1;
+            tcp_port = std.fmt.parseInt(u16, args[i], 10) catch {
+                std.debug.print("[bridge] invalid port '{s}'\n", .{args[i]});
+                usage();
+                return 1;
+            };
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--verbose")) {
+            verbose = true;
+            continue;
         }
         if (std.mem.eql(u8, arg, "-s") or std.mem.eql(u8, arg, "--serve")) {
             serve_mode = true;
@@ -408,12 +521,12 @@ pub fn main(init: std.process.Init) !u8 {
             return 1;
         };
 
-        runHttpMode(host, port) catch {
+        runHttpMode(host, port, fake_scan_ms) catch {
             std.debug.print("[bridge] could not start HTTP server on '{s}'\n", .{host});
             return 1;
         };
     } else {
-        try runTcpMode();
+        try runTcpMode(tcp_port, fake_scan_ms);
     }
 
     return 0;
