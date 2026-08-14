@@ -26,10 +26,13 @@ jobs:
           /opt/zig/zig version
           mkdir -p ~/.cache/zig/tmp
 
-      - name: Install GUI dependencies (SDL3 + dbus headers)
+      - name: Install GUI dependency (dbus headers)
+        # SDL3 é compilado de fonte pelo próprio dvui (pacotes sdl/sdl_linux_deps
+        # do Zig); só o dbus do sistema (bandeja SNI) precisa de headers. O
+        # Ubuntu 24.04 não tem libsdl3-dev (e não é preciso).
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsdl3-dev libdbus-1-dev
+          sudo apt-get install -y libdbus-1-dev
 
       - name: Build xemonitor (x86_64-linux-musl)
         run: zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
@@ -37,7 +40,7 @@ jobs:
       - name: Build bridge (x86_64-linux-musl)
         run: zig build bridge -Doptimize=ReleaseSafe
 
-      - name: Build GUI (x86_64-linux-gnu, SDL3/dbus do sistema)
+      - name: Build GUI (x86_64-linux-gnu, SDL3 de fonte + dbus do sistema)
         run: zig build gui -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
 
       - name: Package release tarball
