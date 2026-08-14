@@ -11,7 +11,9 @@ permissions:
 jobs:
   build-linux:
     name: Build Linux binaries (musl static)
-    runs-on: ubuntu-latest
+    # ubuntu-22.04 (glibc 2.35): baseline mínimo p/ o xemonitor-gui (glibc).
+    # Roda em Ubuntu 22.04+, Debian 12+ e derivados; musl não é afetado.
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,8 +30,7 @@ jobs:
 
       - name: Install GUI dependency (dbus headers)
         # SDL3 é compilado de fonte pelo próprio dvui (pacotes sdl/sdl_linux_deps
-        # do Zig); só o dbus do sistema (bandeja SNI) precisa de headers. O
-        # Ubuntu 24.04 não tem libsdl3-dev (e não é preciso).
+        # do Zig); só o dbus do sistema (bandeja SNI) precisa de headers.
         run: |
           sudo apt-get update
           sudo apt-get install -y libdbus-1-dev
