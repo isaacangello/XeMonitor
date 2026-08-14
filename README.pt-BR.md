@@ -79,12 +79,15 @@ curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install
 `xemonitor` e `xemonitor-bridge` rodam em qualquer distro. O instalador detecta apt
 no Debian/Ubuntu e instala as deps de runtime do GUI (`libdbus-1-3`, `libsystemd0`).
 
-**Desinstalar** (mantém a config e os logs):
+**Desinstalar** (mantém a config e os logs) — o `install.sh` instala um comando
+no sistema (sem precisar baixar pelo CDN):
 
 ```bash
-./uninstall.sh           # remove binarios, servicos, regras udev, desktop/autostart e icone
-./uninstall.sh --purge   # remove tambem ~/.config/xemonitor (config, logs e pids)
+xemonitor-uninstall           # remove binarios, servicos, regras udev, desktop/autostart e icone
+xemonitor-uninstall --purge   # remove tambem ~/.config/xemonitor (config, logs e pids)
 ```
+
+(Alternativa de desenvolvedor/repo: `./uninstall.sh`.)
 
 Alternativa local (desenvolvedor): `zig build gui` + `zig-out/bin/xemonitor-gui` (ver `run_xemonitor.sh`).
 
@@ -172,7 +175,8 @@ src/index.html        → página embutida do modo HTTP do bridge
 assets/xemonitor.desktop → desktop entry (ícone da janela/menu, Wayland)
 build.zig             → build script (exe + bridge + gui + testes)
 install.sh            → instalador Linux (curl | bash)
-uninstall.sh          → desinstalador Linux (--purge remove config+logs)
+uninstall.sh          → fonte do desinstalador Linux; empacotado no release como
+                        /usr/local/bin/xemonitor-uninstall (--purge remove config+logs)
 diagnose_xemonitor.sh → diagnóstico/auto-recuperação do host Linux (--check, --fix, --test-serial)
 .github/workflows/release.yml → CI/CD: tags v* → build musl + gui (ubuntu-22.04) → GitHub Release
 run_xemonitor.sh      → (Linux) bridge systemd + GUI com bandeja (auto_start)

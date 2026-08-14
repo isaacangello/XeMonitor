@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.1] — 2026-08-14
+
+### Changed
+- **Desinstalador no sistema** — o `uninstall.sh` agora vem **dentro do release**
+  (`xemonitor-uninstall`) e o `install.sh` (1.2.2) o grava em
+  `/usr/local/bin/xemonitor-uninstall`. Não precisa mais baixar o uninstaller
+  pelo CDN (o problema do `curl | bash --purge` some). O instalado descobre o
+  prefixo sozinho (mesmo com `--prefix` customizado) e se remove junto na
+  desinstalação.
+- `install.sh` 1.2.2: instala o desinstalador (desde 1.2.1 também cria o grupo
+  `input` quando ele não existe — Debian/Ubuntu minimal sem udev).
+
 ## [0.3.0] — 2026-08-14
 
 ### Added

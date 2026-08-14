@@ -54,7 +54,8 @@ scripts/uninstall_autostart.bat   → remove as tarefas agendadas
 systemd/xemonitor-bridge.service  → unit systemd do bridge (sistema)
 systemd/xemonitor-gui.service     → unit systemd de usuário opcional do GUI (autostart é o padrão)
 install.sh                        → instalador Linux (curl | bash): release + udev + grupos + serviço
-uninstall.sh                      → desinstalador Linux (--purge remove config+logs)
+uninstall.sh                      → fonte do desinstalador Linux (--purge remove config+logs);
+                                    empacotado no release como /usr/local/bin/xemonitor-uninstall
 .github/workflows/release.yml     → CI/CD: tags v* → build musl ReleaseSafe (xemonitor+bridge) + gui glibc (ubuntu-22.04) → GitHub Release
 TODO.md               → plano/checklist da sessão atual
 .checkpoint.md        → diário de sessão (contexto + pendências)

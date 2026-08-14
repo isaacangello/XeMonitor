@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # XeMonitor - desinstalador Linux
 #
+# Instalado pelo install.sh como /usr/local/bin/xemonitor-uninstall (ou rode
+# direto do repositorio: ./uninstall.sh).
+#
 # Uso:
-#   ./uninstall.sh            # remove binarios, servicos, regras udev, desktop/autostart
-#                             # e icone. MANTEM ~/.config/xemonitor (config + logs).
-#   ./uninstall.sh --purge    # alem disso, remove ~/.config/xemonitor (config, logs e pids)
-#   ./uninstall.sh --help
+#   xemonitor-uninstall            # remove binarios, servicos, regras udev,
+#                                  # desktop/autostart e icone. MANTEM ~/.config/xemonitor.
+#   xemonitor-uninstall --purge    # alem disso, remove ~/.config/xemonitor (config, logs e pids)
+#   xemonitor-uninstall --help
 #
 # Variaveis uteis (para testes/avancado):
 #   XEMONITOR_CONFIG_DIR      diretorio de config usado no --purge
@@ -15,16 +18,23 @@ set -euo pipefail
 PREFIX="/usr/local"
 PURGE=0
 REAL_USER="${SUDO_USER:-${USER:-}}"
+SELF="$(basename "$0")"
+
+# quando instalado em <prefixo>/bin, descobre o prefixo automaticamente
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+if [ "${SCRIPT_DIR%/bin}" != "$SCRIPT_DIR" ] && [ "$SELF" = "xemonitor-uninstall" ]; then
+    PREFIX="${SCRIPT_DIR%/bin}"
+fi
 
 usage() {
-    cat <<'HELP'
+    cat <<HELP
 XeMonitor - desinstalador Linux
 
 Uso:
-  ./uninstall.sh            remove binarios, servicos, regras udev, desktop/autostart
+  ${SELF}            remove binarios, servicos, regras udev, desktop/autostart
                             e icone. MANTEM ~/.config/xemonitor (config + logs).
-  ./uninstall.sh --purge    remove tambem ~/.config/xemonitor (config, logs e pids)
-  ./uninstall.sh --help
+  ${SELF} --purge    remove tambem ~/.config/xemonitor (config, logs e pids)
+  ${SELF} --help
 
 Variaveis uteis:
   XEMONITOR_CONFIG_DIR      diretorio de config usado no --purge
@@ -104,7 +114,7 @@ elif [ "$INIT" = "openrc" ]; then
 fi
 
 # ---------- 3. binarios e dados de aplicativo ----------
-for b in xemonitor xemonitor-bridge xemonitor-gui; do
+for b in xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall; do
     [ -f "${BIN_DIR}/${b}" ] || continue
     log "removendo ${BIN_DIR}/${b}..."
     sudo_run rm -f "${BIN_DIR}/${b}"
@@ -177,7 +187,7 @@ EOF
 else
     cat <<EOF
   - Config e logs preservados em: ${XEMONITOR_CONFIG_DIR:-$USER_HOME/.config/xemonitor}
-    (para remover junto: ./uninstall.sh --purge)
+    (para remover junto: ${SELF} --purge)
 EOF
 fi
 echo "============================================================"

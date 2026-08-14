@@ -23,7 +23,7 @@
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
-INSTALL_VERSION="1.2.1"
+INSTALL_VERSION="1.2.2"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
@@ -42,6 +42,9 @@ em /usr/local/bin, configura as regras udev (CH340 + uinput), adiciona o usuario
 aos grupos de acesso serial/uinput (uucp/dialout/input) e instala o servico do bridge:
   - systemd  (Arch/CachyOS/Debian...) -> xemonitor-bridge.service
   - OpenRC   (Alpine WSL...)          -> /etc/init.d/xemonitor-bridge
+
+O desinstalador tambem e instalado: /usr/local/bin/xemonitor-uninstall
+  (use 'xemonitor-uninstall --purge' para remover config + logs).
 
 Opcoes:
   --prefix <dir>   prefixo de instalacao (padrao: /usr/local)
@@ -158,6 +161,14 @@ fi
 log "binarios instalados em ${BIN_DIR}/ (xemonitor, xemonitor-bridge${GUI_INSTALLED:+, xemonitor-gui})"
 GUI_SUMMARY=""
 [ "$GUI_INSTALLED" = "1" ] && GUI_SUMMARY="  ${C_BLUE}GUI:${C_NC}     ${BIN_DIR}/xemonitor-gui (bandeja; inicia no login)"
+
+# desinstalador vem no release; o instalador grava no sistema p/ uso local
+if [ -f "$TMP/xemonitor-uninstall" ]; then
+    sudo_run install -m 0755 "$TMP/xemonitor-uninstall" "$BIN_DIR/xemonitor-uninstall"
+    log "desinstalador instalado em ${BIN_DIR}/xemonitor-uninstall"
+else
+    warn "release antigo sem xemonitor-uninstall; baixe-o manualmente do repositorio."
+fi
 
 sudo_run mkdir -p "${PREFIX}/share/xemonitor"
 printf '%s\n' "$VERSION" | sudo_run tee "${PREFIX}/share/xemonitor/VERSION" > /dev/null
@@ -368,7 +379,7 @@ ${GUI_SUMMARY}
   Config central (Linux): ~/.config/xemonitor/
     xemonitor-gui.conf | xemonitor-YYYY-MM-DD.log | pids
   Status/diagnostico:  ./status_xemonitor.sh
-  Desinstalar:         ./uninstall.sh  (--purge remove config+logs)
+  Desinstalar:         ${BIN_DIR}/xemonitor-uninstall  (--purge remove config+logs)
 
   ${SERVICE_MSG}
     echo 'exemplo' | ${BIN_DIR}/xemonitor --stdin

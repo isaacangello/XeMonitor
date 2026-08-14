@@ -79,12 +79,15 @@ curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install
 auto-detects apt on Debian/Ubuntu to install the GUI runtime deps
 (`libdbus-1-3`, `libsystemd0`).
 
-**Uninstalling** (keeps your config and logs):
+**Uninstalling** (keeps your config and logs) — installed by `install.sh` as a
+system command, no CDN round-trip needed:
 
 ```bash
-./uninstall.sh           # removes binaries, services, udev rules, desktop/autostart, icon
-./uninstall.sh --purge   # also removes ~/.config/xemonitor (config, logs, pids)
+xemonitor-uninstall           # removes binaries, services, udev rules, desktop/autostart, icon
+xemonitor-uninstall --purge   # also removes ~/.config/xemonitor (config, logs, pids)
 ```
+
+(Developer/repo alternative: `./uninstall.sh`.)
 
 Local alternative (developer): `zig build gui` + `zig-out/bin/xemonitor-gui` (see `run_xemonitor.sh`).
 
@@ -172,7 +175,8 @@ src/index.html        → embedded page for the bridge HTTP mode
 assets/xemonitor.desktop → desktop entry (window/menu icon, Wayland)
 build.zig             → build script (exe + bridge + gui + tests)
 install.sh            → Linux installer (curl | bash)
-uninstall.sh          → Linux uninstaller (--purge removes config+logs)
+uninstall.sh          → Linux uninstaller source; bundled into the release as
+                        /usr/local/bin/xemonitor-uninstall (--purge removes config+logs)
 diagnose_xemonitor.sh → Linux host diagnostics / self-recovery (--check, --fix, --test-serial)
 .github/workflows/release.yml → CI/CD: v* tags → musl build + gui (ubuntu-22.04) → GitHub Release
 run_xemonitor.sh      → (Linux) bridge systemd + GUI with tray (auto_start)

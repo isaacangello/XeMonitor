@@ -50,7 +50,9 @@ jobs:
           cp zig-out/bin/xemonitor dist/xemonitor
           cp zig-out/bin/bridge dist/xemonitor-bridge
           cp zig-out/bin/xemonitor-gui dist/xemonitor-gui
-          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui
+          cp uninstall.sh dist/xemonitor-uninstall
+          chmod +x dist/xemonitor-uninstall
+          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall
           sha256sum xemonitor-linux-x86_64.tar.gz | tee xemonitor-linux-x86_64.tar.gz.sha256
 
       - name: Publish release
