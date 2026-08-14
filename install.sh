@@ -23,7 +23,7 @@
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
-INSTALL_VERSION="1.2.0"
+INSTALL_VERSION="1.2.1"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
@@ -288,6 +288,8 @@ fi
 # ---------- 5. grupos de acesso serial ----------
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
     # uucp/dialout: acesso serial; input: acesso ao /dev/uinput (injetor nativo)
+    # cria o grupo 'input' se faltar (Debian/Ubuntu minimal sem udev nao o tem)
+    sudo_run getent group input >/dev/null 2>&1 || sudo_run groupadd input 2>/dev/null || true
     sudo_run usermod -aG uucp,dialout,input "$REAL_USER" || true
     log "usuario '${REAL_USER}' adicionado aos grupos uucp, dialout e input."
     warn "efetivo apenas apos novo login (ou use 'sg uucp -c ...')."
