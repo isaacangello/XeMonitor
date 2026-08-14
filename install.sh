@@ -5,8 +5,9 @@
 #   curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
 #
 # Instala o bridge (servidor serial->TCP) e o xemonitor (cliente teclado virtual)
-# em /usr/local/bin, configura a regra udev do CH340, adiciona o usuario aos
-# grupos de acesso serial (uucp/dialout) e instala o servico do bridge:
+# em /usr/local/bin, configura as regras udev (CH340 + uinput), adiciona o
+# usuario aos grupos de acesso serial/uinput (uucp/dialout/input) e instala o
+# servico do bridge:
 #   - systemd  (Arch/CachyOS/Debian...) -> xemonitor-bridge.service
 #   - OpenRC   (Alpine WSL...)          -> /etc/init.d/xemonitor-bridge
 #
@@ -22,7 +23,7 @@
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
-INSTALL_VERSION="1.1.0"
+INSTALL_VERSION="1.2.0"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
@@ -37,8 +38,8 @@ Uso:
   curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
 
 Instala o bridge (servidor serial->TCP) e o xemonitor (cliente teclado virtual)
-em /usr/local/bin, configura a regra udev do CH340, adiciona o usuario aos
-grupos de acesso serial (uucp/dialout) e instala o servico do bridge:
+em /usr/local/bin, configura as regras udev (CH340 + uinput), adiciona o usuario
+aos grupos de acesso serial/uinput (uucp/dialout/input) e instala o servico do bridge:
   - systemd  (Arch/CachyOS/Debian...) -> xemonitor-bridge.service
   - OpenRC   (Alpine WSL...)          -> /etc/init.d/xemonitor-bridge
 
@@ -161,17 +162,23 @@ GUI_SUMMARY=""
 sudo_run mkdir -p "${PREFIX}/share/xemonitor"
 printf '%s\n' "$VERSION" | sudo_run tee "${PREFIX}/share/xemonitor/VERSION" > /dev/null
 
-# ---------- 4. regra udev CH340 ----------
-UDEV_RULE='SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666"'
+# ---------- 4. regras udev (CH340 + uinput) ----------
+UDEV_CH340='SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666"'
+UDEV_UINPUT='KERNEL=="uinput", GROUP="input", MODE="0660"'
 if [ -d /etc/udev/rules.d ]; then
-    printf '%s\n' "$UDEV_RULE" | sudo_run tee /etc/udev/rules.d/99-ch340.rules > /dev/null
+    printf '%s\n' "$UDEV_CH340" | sudo_run tee /etc/udev/rules.d/99-ch340.rules > /dev/null
     log "regra udev do CH340 instalada (99-ch340.rules)."
+    printf '%s\n' "$UDEV_UINPUT" | sudo_run tee /etc/udev/rules.d/99-xemonitor-uinput.rules > /dev/null
+    log "regra udev do uinput instalada (99-xemonitor-uinput.rules)."
+    # garante o modulo uinput no boot (injetor nativo)
+    printf '%s\n' 'uinput' | sudo_run tee /etc/modules-load.d/xemonitor-uinput.conf > /dev/null
+    sudo_run modprobe uinput 2>/dev/null || true
     if command -v udevadm >/dev/null 2>&1; then
         sudo_run udevadm control --reload-rules || true
         sudo_run udevadm trigger || true
     fi
 else
-    warn "diretorio /etc/udev/rules.d nao encontrado; pule a regra udev."
+    warn "diretorio /etc/udev/rules.d nao encontrado; pule as regras udev."
 fi
 
 # ---------- 4b. icone do app (hicolor) ----------
@@ -269,10 +276,20 @@ EOF
     fi
 fi
 
+# ---------- 4d. dependencias de runtime do GUI (Debian/Ubuntu) ----------
+# xemonitor-gui linka libdbus-1.so.3 e libsystemd.so.0; em instalacoes
+# minimas libdbus-1-3 pode faltar. Best-effort: instala via apt quando possivel.
+if [ "$GUI_INSTALLED" = "1" ] && command -v apt-get >/dev/null 2>&1; then
+    log "instalando dependencias de runtime do GUI (libdbus-1-3 libsystemd0)..."
+    sudo_run apt-get install -y --no-install-recommends libdbus-1-3 libsystemd0 >/dev/null 2>&1 ||
+        warn "nao foi possivel instalar via apt (manual: apt-get install libdbus-1-3 libsystemd0)."
+fi
+
 # ---------- 5. grupos de acesso serial ----------
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
-    sudo_run usermod -aG uucp,dialout "$REAL_USER" || true
-    log "usuario '${REAL_USER}' adicionado aos grupos uucp e dialout."
+    # uucp/dialout: acesso serial; input: acesso ao /dev/uinput (injetor nativo)
+    sudo_run usermod -aG uucp,dialout,input "$REAL_USER" || true
+    log "usuario '${REAL_USER}' adicionado aos grupos uucp, dialout e input."
     warn "efetivo apenas apos novo login (ou use 'sg uucp -c ...')."
 fi
 
@@ -323,9 +340,9 @@ fi
 
 # ---------- 7. dependencia de injecao (cliente) ----------
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    command -v ydotool >/dev/null 2>&1 || warn "ydotool nao encontrado (injeção Wayland). Instale: pacman -S ydotool / apk add ydotool."
+    command -v ydotool >/dev/null 2>&1 || warn "ydotool nao encontrado (fallback Wayland). Instale: pacman -S ydotool / apt install ydotool / apk add ydotool."
 else
-    command -v xdotool >/dev/null 2>&1 || warn "xdotool nao encontrado (injeção X11). Instale: pacman -S xdotool / apt install xdotool / apk add xdotool."
+    command -v xdotool >/dev/null 2>&1 || warn "xdotool nao encontrado (fallback X11). Instale: pacman -S xdotool / apt install xdotool / apk add xdotool."
 fi
 
 # ---------- 8. resumo ----------
@@ -347,8 +364,9 @@ ${C_CIANO}------------------------------------------------------------${C_NC}
 ${GUI_SUMMARY}
 
   Config central (Linux): ~/.config/xemonitor/
-    xemonitor-gui.conf | xemonitor.log | pids
+    xemonitor-gui.conf | xemonitor-YYYY-MM-DD.log | pids
   Status/diagnostico:  ./status_xemonitor.sh
+  Desinstalar:         ./uninstall.sh  (--purge remove config+logs)
 
   ${SERVICE_MSG}
     echo 'exemplo' | ${BIN_DIR}/xemonitor --stdin
