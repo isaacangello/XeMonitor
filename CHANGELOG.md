@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0] — 2026-08-14
+
+### Added
+- **Log rotativo por data** — o cliente grava `xemonitor-YYYY-MM-DD.log` na pasta
+  central (ex.: `xemonitor-2026-08-14.log`); a cada escrita o `logPrint` verifica
+  se o arquivo do dia existe e, se o dia mudou, abre um novo (evita um log de
+  vários dias). Vale para Windows e Linux. O GUI lê o datado de hoje no
+  `backfillLog` (fallback para o legado `xemonitor.log`).
+- **Desinstalador Linux** — novo `uninstall.sh` na raiz: remove binários, serviços
+  (systemd/OpenRC), regras udev (CH340 + uinput), `/etc/modules-load.d`,
+  `.desktop`/autostart e ícone hicolor, mas **mantém** `~/.config/xemonitor`
+  (config + logs). `./uninstall.sh --purge` remove também config, logs e pids.
+- **Compatibilidade Ubuntu/Debian** — CI passa a compilar em `ubuntu-22.04`
+  (glibc 2.35): o `xemonitor-gui` lançado roda em Ubuntu 22.04+, Debian 12+ e
+  derivados (antes exigia glibc 2.39/24.04). `install.sh` 1.2.0 instala as deps
+  de runtime do GUI via apt (`libdbus-1-3 libsystemd0`), adiciona o usuário ao
+  grupo `input` e instala regra udev/modulo para `/dev/uinput` (injetor nativo).
+- `install.sh` agora avisa `apt install ydotool` no fallback Wayland.
+
+### Changed
+- `status_xemonitor.sh` e `diagnose_xemonitor.sh` passam a ler o log datado de
+  hoje (fallback p/ `xemonitor.log`).
+- `build.zig.zon` → `.version = "0.3.0"`.
+
 ## [0.2.0] — 2026-08-14
 
 ### Added

@@ -44,7 +44,8 @@ O bridge pode rodar localmente e o `xemonitor` injeta via **teclado virtual nati
 - Envia `Enter` (`VK_RETURN`) logo após o texto injetado.
 - Reconexão automática em caso de desconexão (serial ou TCP).
 - **Pasta central de config/log**: `~/.config/xemonitor` (Linux) / `%APPDATA%\xemonitor`
-  (Windows) — `xemonitor.log`, pids e `xemonitor-gui.conf` moram todos lá
+  (Windows) — **logs datados** `xemonitor-YYYY-MM-DD.log` (um arquivo novo por dia,
+  verificado a cada escrita), pids e `xemonitor-gui.conf` moram todos lá
   (override `XEMONITOR_CONFIG_DIR`; fallback para o diretório atual).
 - **GUI Linux** (`xemonitor-gui`, DVUI+SDL3): ícone da janela (X11 via
   `SDL_SetWindowIcon`; Wayland via `.desktop`), bandeja (opt-in `--tray`, padrão
@@ -54,15 +55,17 @@ O bridge pode rodar localmente e o `xemonitor` injeta via **teclado virtual nati
 
 ### Linux
 
-Instalador oficial (baixa o binário da última GitHub Release e configura tudo — regra udev do CH340, grupos `uucp/dialout` e serviço do bridge em systemd ou OpenRC):
+Instalador oficial (baixa o binário da última GitHub Release e configura tudo — regras udev do CH340 e do uinput, grupos `uucp/dialout/input`, deps de runtime do GUI via apt no Debian/Ubuntu e o serviço do bridge em systemd ou OpenRC):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
 ```
 
 - Instala `xemonitor`, `xemonitor-bridge` e `xemonitor-gui` em `/usr/local/bin`.
-- Cria a regra udev `99-ch340.rules` (`MODE="0666"`).
-- Adiciona o usuário aos grupos `uucp` e `dialout`.
+- Cria as regras udev `99-ch340.rules` (`MODE="0666"`) e `99-xemonitor-uinput.rules`
+  (`GROUP="input"`, `MODE="0660"`), além de `/etc/modules-load.d/xemonitor-uinput.conf`
+  para o injetor nativo `/dev/uinput` funcionar direto.
+- Adiciona o usuário aos grupos `uucp`, `dialout` e `input`.
 - Instala e inicia o serviço `xemonitor-bridge` (systemd ou OpenRC) — já inicia com o sistema.
 - Instala o `.desktop` do app, o autostart XDG (GUI inicia no login) e um
   `~/.config/xemonitor/xemonitor-gui.conf` padrão (`auto_start=true`).
@@ -70,6 +73,18 @@ curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install
   (`/etc/systemd/user/xemonitor-gui.service`) para quem preferir ao autostart:
   `systemctl --user enable xemonitor-gui.service`.
 - Requer `sudo` (ou rodar como root).
+
+**Distros suportadas**: o GUI do release (`xemonitor-gui`) é compilado no Ubuntu 22.04
+(glibc 2.35) e roda em **Ubuntu 22.04+ / Debian 12+** e derivados; os binários musl
+`xemonitor` e `xemonitor-bridge` rodam em qualquer distro. O instalador detecta apt
+no Debian/Ubuntu e instala as deps de runtime do GUI (`libdbus-1-3`, `libsystemd0`).
+
+**Desinstalar** (mantém a config e os logs):
+
+```bash
+./uninstall.sh           # remove binarios, servicos, regras udev, desktop/autostart e icone
+./uninstall.sh --purge   # remove tambem ~/.config/xemonitor (config, logs e pids)
+```
 
 Alternativa local (desenvolvedor): `zig build gui` + `zig-out/bin/xemonitor-gui` (ver `run_xemonitor.sh`).
 
@@ -157,8 +172,9 @@ src/index.html        → página embutida do modo HTTP do bridge
 assets/xemonitor.desktop → desktop entry (ícone da janela/menu, Wayland)
 build.zig             → build script (exe + bridge + gui + testes)
 install.sh            → instalador Linux (curl | bash)
+uninstall.sh          → desinstalador Linux (--purge remove config+logs)
 diagnose_xemonitor.sh → diagnóstico/auto-recuperação do host Linux (--check, --fix, --test-serial)
-.github/workflows/release.yml → CI/CD: tags v* → build musl + gui → GitHub Release
+.github/workflows/release.yml → CI/CD: tags v* → build musl + gui (ubuntu-22.04) → GitHub Release
 run_xemonitor.sh      → (Linux) bridge systemd + GUI com bandeja (auto_start)
 stop_xemonitor.sh     → (Linux) mata GUI + cliente + para o bridge
 status_xemonitor.sh   → (Linux) status serviço/GUI/cliente/serial + pasta de config
@@ -178,7 +194,9 @@ TODO.md / AGENTS.md / CHANGELOG.md → plano / contexto / changelog
 
 ## Logs esperados
 
-Ao escanear, o log (`~/.config/xemonitor/xemonitor.log` no Linux, `%APPDATA%\xemonitor\xemonitor.log` no Windows) mostra:
+Ao escanear, o log **datado** mostra (Linux `~/.config/xemonitor/xemonitor-YYYY-MM-DD.log`,
+Windows `%APPDATA%\xemonitor\xemonitor-YYYY-MM-DD.log`; um arquivo novo é criado na
+virada do dia — verificado a cada escrita):
 
 - `[scan] '7898121840147'` — conteúdo lido (completo, sem bytes soltos).
 - `[info] injected '...'` — sucesso do `SendInput`.

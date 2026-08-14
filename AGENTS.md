@@ -54,7 +54,8 @@ scripts/uninstall_autostart.bat   → remove as tarefas agendadas
 systemd/xemonitor-bridge.service  → unit systemd do bridge (sistema)
 systemd/xemonitor-gui.service     → unit systemd de usuário opcional do GUI (autostart é o padrão)
 install.sh                        → instalador Linux (curl | bash): release + udev + grupos + serviço
-.github/workflows/release.yml     → CI/CD: tags v* → build musl ReleaseSafe (xemonitor+bridge) + gui glibc → GitHub Release
+uninstall.sh                      → desinstalador Linux (--purge remove config+logs)
+.github/workflows/release.yml     → CI/CD: tags v* → build musl ReleaseSafe (xemonitor+bridge) + gui glibc (ubuntu-22.04) → GitHub Release
 TODO.md               → plano/checklist da sessão atual
 .checkpoint.md        → diário de sessão (contexto + pendências)
 CHANGELOG.md          → changelog
@@ -63,10 +64,11 @@ CHANGELOG.md          → changelog
 ## Pasta central de config/log (v0.2.0+)
 - Linux: `~/.config/xemonitor` (ou `$XDG_CONFIG_HOME/xemonitor`); Windows: `%APPDATA%\xemonitor`
   (fallback `%LOCALAPPDATA%`); override p/ testes: `XEMONITOR_CONFIG_DIR`; fallback final: cwd.
-- Moram lá: `xemonitor.log` (append), `xemonitor.pid`, `xemonitor-gui.pid`,
-  `xemonitor_tray.pid`, `xemonitor-gui.conf`.
-- Implementação única em `src/paths.zig` (`openConfigDir`, `joinPath`). Não reintroduzir
-  arquivos soltos no cwd do usuário.
+- Moram lá: logs **datados** `xemonitor-YYYY-MM-DD.log` (append; o `logPrint` verifica
+  o dia a cada escrita e abre um novo arquivo na virada do dia), `xemonitor.pid`,
+  `xemonitor-gui.pid`, `xemonitor_tray.pid`, `xemonitor-gui.conf`.
+- Implementação única em `src/paths.zig` (`openConfigDir`, `joinPath`, `datedLogName`).
+  Não reintroduzir arquivos soltos no cwd do usuário.
 
 ## Roadmap (visão geral)
 1. **xemonitor como teclado nos dois SO** — Windows: `SendInput` (validado); Linux: ydotool/xdotool (validado no CachyOS).
@@ -119,7 +121,7 @@ wsl -d Arch -u root systemctl status docker
 ## Convenções / avisos
 - **Não rodar o CLion elevado para testes de injeção**: processo admin não injeta teclas (UIPI) em janelas não-elevadas.
 - Bridge executa de `/usr/local/bin/xemonitor-bridge` (cópia feita pelo install script); ao recompilar, rodar install script com `--reinstall` ou re-rodar o install.
-- Preferir `logPrint()` (stderr + `xemonitor.log`) em vez de `std.debug.print`.
+- Preferir `logPrint()` (stderr + log datado `xemonitor-YYYY-MM-DD.log`) em vez de `std.debug.print`.
 - Logs das 3 vias (stdin/TCP/serial): `[scan] '...'` (conteúdo lido), `[info] injected '...'` e `[info] enter sent` (sucesso do SendInput). Eco cru de byte foi removido — não reintroduzir.
 - Ícone de bandeja é **opt-in** (`--tray`); padrão desligado. O ícone usa PowerShell oculto — se o processo for morto com `taskkill /f`, vira órfão (limpar cache `TrayNotify` + reiniciar explorer).
 - O modo TCP do bridge deve aceitar múltiplas conexões (xemonitor reconecta a cada 2s).
