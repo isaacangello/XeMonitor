@@ -31,6 +31,7 @@ src/tray.zig          → bandeja Linux (SNI via D-Bus + menu dbusmenu)
 src/paths.zig         → diretório central de config/log (Linux ~/.config, Windows %APPDATA%)
 src/uinput.zig        → injetor Linux nativo /dev/uinput (padrão; fallback ydotool/xdotool)
 src/icon.zig          → ícone procedural da bandeja (barcode 24x24)
+src/i18n.zig          → i18n: tabelas us/pt_br + t(comptime key) + formatInto ({s}/{d})
 src/bridge.py         → bridge Python legado (stdlib-only, alternativa)
 src/index.html        → página embutida do modo HTTP do bridge
 assets/xemonitor.desktop → desktop entry (ícone da janela/menu; Wayland usa Icon=xemonitor)

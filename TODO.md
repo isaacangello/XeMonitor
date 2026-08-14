@@ -2,6 +2,20 @@
 
 Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 
+## Quit-dialog + i18n (sessão atual)
+
+### Código
+- [x] **Fix deadlock no `ManagedProc.stop()`** — `waiter` segura o mutex durante o `wait`; `stop()` mata por pid (SIGTERM→SIGKILL 500ms) antes do `mutex.lock`; validado com reprodutor e em execução real (clique em "Encerrar" encerrou GUI+bridge+cliente limpos)
+- [x] **Diálogo de confirmação de encerramento** — "Encerrar"/bandeja "Sair" pedem confirmação; cancelar mantém o GUI; X do diálogo = cancelar
+- [x] **Fix panic `@memcpy` alias em `refreshStatus`** (status gravado direto em `status_buf`)
+- [x] **`src/i18n.zig`** (novo): tabelas `us`/`pt_br`, `Locale`, `t(comptime key)` (compilação falha se chave faltar), `formatInto` runtime (`{s}`/`{d}`)
+- [x] **Config `lang`** (padrão `us`; load/save/free) + seletor de idioma no painel (dropdown dvui)
+- [x] Strings do GUI e da bandeja migradas para `i18n.t(...)`
+- [x] `zig build`, `zig build gui`, `zig build test` verdes; `zig run` teste do formatter (us/pt_br OK); validação cancel (hook) e yes (exit limpo); bandeja pt_br via D-Bus (GetLayout: "Mostrar janela"/"Sair")
+
+### Serviço / ambiente
+- [x] Serviço systemd real `xemonitor-bridge` religado (estava parado desde 14:16)
+
 ## Organização v0.2.0 (sessão atual)
 > Alvo: pasta central de config/log, GUI com layout/ícone melhores, autostart e
 > instruções do instalador Windows.

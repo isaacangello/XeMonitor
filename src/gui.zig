@@ -4,6 +4,7 @@ const dvui = @import("dvui");
 const SDLBackend = @import("sdl3-backend");
 const tray_mod = @import("tray.zig");
 const paths = @import("paths.zig");
+const i18n = @import("i18n.zig");
 
 const os = builtin.os.tag;
 
@@ -92,6 +93,7 @@ const Config = struct {
     log_path: []u8,
     auto_start: bool,
     tray_enabled: bool,
+    lang: []u8,
 };
 
 fn defaultConfig(gpa: std.mem.Allocator) Config {
@@ -104,6 +106,7 @@ fn defaultConfig(gpa: std.mem.Allocator) Config {
         .log_path = gpa.dupe(u8, DEFAULT_LOG) catch "",
         .auto_start = false,
         .tray_enabled = true,
+        .lang = gpa.dupe(u8, "us") catch "",
     };
 }
 
@@ -146,13 +149,16 @@ fn setField(gpa: std.mem.Allocator, cfg: *Config, key: []const u8, value: []cons
         cfg.auto_start = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
     } else if (std.mem.eql(u8, key, "tray_enabled")) {
         cfg.tray_enabled = std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    } else if (std.mem.eql(u8, key, "lang")) {
+        gpa.free(cfg.lang);
+        cfg.lang = gpa.dupe(u8, value) catch return;
     }
 }
 
 fn saveConfig(gpa: std.mem.Allocator, io: std.Io, path: []const u8, cfg: *const Config) void {
     const data = std.fmt.allocPrint(gpa,
-        "tcp_host={s}\ntcp_port={d}\nserver_mode={s}\nbridge_path={s}\nclient_path={s}\nlog_path={s}\nauto_start={s}\ntray_enabled={s}\n",
-        .{ cfg.tcp_host, cfg.tcp_port, cfg.server_mode, cfg.bridge_path, cfg.client_path, cfg.log_path, @as([]const u8, if (cfg.auto_start) "true" else "false"), @as([]const u8, if (cfg.tray_enabled) "true" else "false") },
+        "tcp_host={s}\ntcp_port={d}\nserver_mode={s}\nbridge_path={s}\nclient_path={s}\nlog_path={s}\nauto_start={s}\ntray_enabled={s}\nlang={s}\n",
+        .{ cfg.tcp_host, cfg.tcp_port, cfg.server_mode, cfg.bridge_path, cfg.client_path, cfg.log_path, @as([]const u8, if (cfg.auto_start) "true" else "false"), @as([]const u8, if (cfg.tray_enabled) "true" else "false"), cfg.lang },
     ) catch return;
     defer gpa.free(data);
     std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch {};
@@ -163,6 +169,7 @@ fn saveConfig(gpa: std.mem.Allocator, io: std.Io, path: []const u8, cfg: *const 
 const ManagedProc = struct {
     mutex: std.Io.Mutex = .init,
     child: ?std.process.Child = null,
+    child_pid: std.atomic.Value(std.posix.pid_t) = std.atomic.Value(std.posix.pid_t).init(0),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_exit: u8 = 0,
 
@@ -193,6 +200,7 @@ const ManagedProc = struct {
             }
         }
         ctx.proc.child = null;
+        ctx.proc.child_pid.store(0, .seq_cst);
         ctx.proc.mutex.unlock(ctx.io);
         ctx.proc.running.store(false, .seq_cst);
     }
@@ -210,6 +218,7 @@ const ManagedProc = struct {
         });
         self.mutex.lock(io) catch {};
         self.child = child;
+        self.child_pid.store(child.id orelse 0, .seq_cst);
         self.running.store(true, .seq_cst);
         self.mutex.unlock(io);
         self.q_mutex.lock(io) catch {};
@@ -233,6 +242,18 @@ const ManagedProc = struct {
         self.q_mutex.lock(io) catch {};
         self.q_stopping = true;
         self.q_mutex.unlock(io);
+        // The waiter thread holds `mutex` while blocked in `ch.wait` for a live
+        // child, so locking `mutex` before signalling the child would deadlock
+        // (the child would never receive SIGTERM). Signal by pid directly first:
+        // SIGTERM, then a SIGKILL fallback so stop() can never hang.
+        if (comptime os != .windows) {
+            const pid = self.child_pid.load(.seq_cst);
+            if (pid != 0) {
+                _ = std.posix.kill(pid, .TERM) catch {};
+                std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), .awake) catch {};
+                _ = std.posix.kill(pid, .KILL) catch {};
+            }
+        }
         self.mutex.lock(io) catch {};
         if (self.child) |*ch| {
             ch.kill(io);
@@ -344,6 +365,13 @@ const ScanEntry = struct {
     code: []u8,
 };
 
+/// Resultado do diálogo de confirmação de encerramento.
+const ConfirmResult = enum(u8) {
+    none,
+    yes,
+    cancel,
+};
+
 const LogLine = struct {
     line: []u8,
 };
@@ -378,9 +406,15 @@ const App = struct {
     last_scan_time_ns: i128 = 0,
     watchdog_state: u8 = 0,
 
+    quit_confirm_open: bool = false,
+    quit_confirm_result: ConfirmResult = .none,
+    locale: i18n.Locale = .us,
+
     fn init(gpa: std.mem.Allocator, io: std.Io) App {
         const path = paths.joinPath(gpa, gui_cfg_dir.path, CONFIG_FILE) orelse (gpa.dupe(u8, CONFIG_FILE) catch CONFIG_FILE);
         var cfg = loadConfig(gpa, io, path);
+        const locale = i18n.Locale.fromString(cfg.lang);
+        i18n.setLocale(locale);
 
         var host_buf = [_]u8{0} ** 64;
         const hn = @min(cfg.tcp_host.len, host_buf.len - 1);
@@ -404,6 +438,7 @@ const App = struct {
             .scans = .empty,
             .host_buf = host_buf,
             .port_buf = port_buf,
+            .locale = locale,
         };
     }
 
@@ -423,17 +458,23 @@ const App = struct {
         self.gpa.free(self.cfg.bridge_path);
         self.gpa.free(self.cfg.client_path);
         self.gpa.free(self.cfg.log_path);
+        self.gpa.free(self.cfg.lang);
     }
 
     fn nowNs(self: *App) i128 {
         return std.Io.Timestamp.now(self.io, .real).nanoseconds;
     }
 
-    fn setMsg(self: *App, comptime fmt: []const u8, args: anytype) void {
-        const s = std.fmt.bufPrint(&self.msg_buf, fmt, args) catch blk: {
-            const m = std.fmt.bufPrint(&self.msg_buf, "erro de formatação", .{}) catch self.msg_buf[0..0];
-            break :blk m;
-        };
+    fn setMsg(self: *App, comptime key: []const u8, args: anytype) void {
+        const template = i18n.t(key);
+        const s = i18n.formatInto(&self.msg_buf, template, args);
+        if (s.len == 0) {
+            const fallback = i18n.t("msg_fmt_error");
+            if (fallback.len > self.msg_buf.len) return;
+            @memcpy(self.msg_buf[0..fallback.len], fallback);
+            self.msg_len = fallback.len;
+            return;
+        }
         self.msg_len = s.len;
     }
 
@@ -492,7 +533,7 @@ fn watchdogTick(app: *App) void {
     if (client_running and silent_ns > 0 and silent_secs >= 30) {
         if (app.watchdog_state == 0) {
             app.watchdog_state = 1;
-            app.setMsg("aviso: conectado, mas sem scans ha {d}s. Verifique o scanner ou use 'Reparar'.", .{silent_secs});
+            app.setMsg("msg_no_scans_warn", .{silent_secs});
         }
     } else if (silent_ns == 0 or silent_secs < 30) {
         app.watchdog_state = 0;
@@ -610,7 +651,7 @@ fn runPrivileged(app: *App, argv: []const []const u8) CmdResult {
 
     const joined = std.mem.join(app.gpa, " ", argv) catch return res;
     defer app.gpa.free(joined);
-    const line = std.fmt.allocPrint(app.gpa, "{s} ; echo ; echo 'pressione Enter para fechar' ; read", .{joined}) catch return res;
+    const line = std.fmt.allocPrint(app.gpa, "{s} ; echo ; echo '{s}' ; read", .{ joined, i18n.t("press_enter") }) catch return res;
     defer app.gpa.free(line);
     _ = runCommand(app.gpa, app.io, &.{ "konsole", "--hide-menubar", "--hide-tabbar", "--geometry=560x220", "-e", "bash", "-c", line });
     return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
@@ -622,7 +663,7 @@ fn systemdAction(app: *App, scope: []const u8, action: []const u8) void {
         // Servico de sistema ja esta no estado desejado (start com ativo /
         // stop com parado) — evita prompt pkexec desnecessario.
         if (std.mem.eql(u8, action, "start")) {
-            app.setMsg("bridge: systemd ja estava ativo", .{});
+            app.setMsg("msg_bridge_active", .{});
             return;
         }
     }
@@ -632,18 +673,18 @@ fn systemdAction(app: *App, scope: []const u8, action: []const u8) void {
         &.{ "systemctl", action, "xemonitor-bridge" };
     const res = if (is_user) runCommand(app.gpa, app.io, argv) else runPrivileged(app, argv);
     if (res.ok) {
-        app.setMsg("bridge: systemd {s} ok", .{action});
+        app.setMsg("msg_bridge_ok", .{action});
     } else {
-        app.setMsg("bridge: systemd {s} falhou ({s})", .{ action, @as([]const u8, res.stderr) });
+        app.setMsg("msg_bridge_failed", .{ action, @as([]const u8, res.stderr) });
     }
 }
 
 fn wslAction(app: *App, action: []const u8) void {
     const res = runCommand(app.gpa, app.io, &.{ "wsl", "-u", "root", "systemctl", action, "xemonitor-bridge" });
     if (res.ok) {
-        app.setMsg("bridge: wsl {s} ok", .{action});
+        app.setMsg("msg_wsl_ok", .{action});
     } else {
-        app.setMsg("bridge: wsl {s} falhou", .{action});
+        app.setMsg("msg_wsl_failed", .{action});
     }
 }
 
@@ -651,7 +692,7 @@ fn startBridge(app: *App) void {
     if (isMode(app, "subprocess")) {
         app.bridge_port = findFreePort(app.io, app.cfg.tcp_port);
         const port_str = std.fmt.allocPrint(app.gpa, "{d}", .{app.bridge_port}) catch {
-            app.setMsg("falha ao formatar porta", .{});
+            app.setMsg("msg_fmt_port_failed", .{});
             return;
         };
         defer app.gpa.free(port_str);
@@ -660,12 +701,12 @@ fn startBridge(app: *App) void {
         else
             &.{ "xemonitor-bridge", "--tcp-port", port_str };
         app.bridge.start(app.io, argv) catch |err| {
-            app.setMsg("falha ao iniciar bridge: {s}", .{@errorName(err)});
+            app.setMsg("msg_bridge_start_failed", .{@errorName(err)});
             return;
         };
         app.bridge_is_ours = true;
         app.started_this_session = true;
-        app.setMsg("bridge subprocesso iniciado na porta {d}", .{app.bridge_port});
+        app.setMsg("msg_bridge_subprocess_started", .{app.bridge_port});
     } else if (isMode(app, "systemd-user")) {
         systemdAction(app, "--user", "start");
     } else if (isMode(app, "systemd-system")) {
@@ -673,7 +714,7 @@ fn startBridge(app: *App) void {
     } else if (isMode(app, "wsl")) {
         wslAction(app, "start");
     } else {
-        app.setMsg("modo de servidor desconhecido: {s}", .{app.cfg.server_mode});
+        app.setMsg("msg_mode_unknown", .{app.cfg.server_mode});
     }
 }
 
@@ -681,7 +722,7 @@ fn stopBridge(app: *App) void {
     if (isMode(app, "subprocess")) {
         app.bridge.stop(app.io);
         app.bridge_is_ours = false;
-        app.setMsg("bridge subprocesso parado", .{});
+        app.setMsg("msg_bridge_subprocess_stopped", .{});
     } else if (isMode(app, "systemd-user")) {
         systemdAction(app, "--user", "stop");
     } else if (isMode(app, "systemd-system")) {
@@ -689,27 +730,27 @@ fn stopBridge(app: *App) void {
     } else if (isMode(app, "wsl")) {
         wslAction(app, "stop");
     } else {
-        app.setMsg("modo de servidor desconhecido: {s}", .{app.cfg.server_mode});
+        app.setMsg("msg_mode_unknown", .{app.cfg.server_mode});
     }
 }
 
 fn computeBridgeStatus(app: *App) []const u8 {
     if (isMode(app, "subprocess")) {
         if (app.bridge.running.load(.seq_cst)) {
-            return std.fmt.bufPrint(&app.status_buf, "rodando (subprocesso, porta {d})", .{app.bridge_port}) catch "rodando";
+            return i18n.formatInto(&app.status_buf, i18n.t("status_subprocess"), .{app.bridge_port});
         }
-        return "parado";
+        return i18n.t("status_stopped");
     }
     if (isMode(app, "systemd-user") and os == .linux) {
-        return if (runSystemdStatus(app, "--user")) "rodando (systemd user)" else "parado (systemd user)";
+        return if (runSystemdStatus(app, "--user")) i18n.t("status_systemd_user_running") else i18n.t("status_systemd_user_stopped");
     }
     if (isMode(app, "systemd-system") and os == .linux) {
-        return if (runSystemdStatus(app, "")) "rodando (systemd)" else "parado (systemd)";
+        return if (runSystemdStatus(app, "")) i18n.t("status_systemd_running") else i18n.t("status_systemd_stopped");
     }
     if (isMode(app, "wsl") and os == .windows) {
-        return if (runWslStatus(app)) "rodando (WSL)" else "parado (WSL)";
+        return if (runWslStatus(app)) i18n.t("status_wsl_running") else i18n.t("status_wsl_stopped");
     }
-    return "modo desconhecido";
+    return i18n.t("status_mode_unknown");
 }
 
 fn refreshStatus(app: *App) void {
@@ -718,6 +759,9 @@ fn refreshStatus(app: *App) void {
     app.status_at = now;
     const s = computeBridgeStatus(app);
     app.status_len = @min(s.len, app.status_buf.len - 1);
+    // computeBridgeStatus pode gravar direto em status_buf (modo subprocesso);
+    // nesse caso o conteudo ja esta no buffer e o memcpy seria um alias.
+    if (s.len > 0 and @intFromPtr(s.ptr) == @intFromPtr(&app.status_buf)) return;
     @memcpy(app.status_buf[0..app.status_len], s[0..app.status_len]);
 }
 
@@ -726,7 +770,7 @@ fn killStaleClient(app: *App) void {
     // -x: casa apenas o processo do cliente (comm "xemonitor"), sem atingir
     // o proprio GUI ("xemonitor-gui") nem o bridge ("xemonitor-bridge").
     const res = runCommand(app.gpa, app.io, &.{ "pkill", "-9", "-x", "xemonitor" });
-    if (res.ok) app.setMsg("cliente anterior encerrado", .{});
+    if (res.ok) app.setMsg("msg_old_client_killed", .{});
     std.Io.Dir.cwd().deleteFile(app.io, "xemonitor.pid") catch {};
 }
 
@@ -734,7 +778,7 @@ fn startClient(app: *App) void {
     killStaleClient(app);
     const port: u16 = if (app.bridge_is_ours and app.bridge.running.load(.seq_cst)) app.bridge_port else app.cfg.tcp_port;
     const addr = std.fmt.allocPrint(app.gpa, "{s}:{d}", .{ app.cfg.tcp_host, port }) catch {
-        app.setMsg("falha ao formatar endereço", .{});
+        app.setMsg("msg_fmt_addr_failed", .{});
         return;
     };
     defer app.gpa.free(addr);
@@ -743,34 +787,34 @@ fn startClient(app: *App) void {
     else
         &.{ "xemonitor", "--tcp", addr };
     app.client.start(app.io, argv) catch |err| {
-        app.setMsg("falha ao iniciar cliente: {s}", .{@errorName(err)});
+        app.setMsg("msg_client_start_failed", .{@errorName(err)});
         return;
     };
-    app.setMsg("cliente conectando em {s}", .{addr});
+    app.setMsg("msg_client_connecting", .{addr});
 }
 
 fn stopClient(app: *App) void {
     app.client.stop(app.io);
-    app.setMsg("cliente parado", .{});
+    app.setMsg("msg_client_stopped", .{});
 }
 
 // ---------- UI ----------
 
 fn renderServerPanel(app: *App) void {
-    dvui.label(@src(), "Servidor (bridge)", .{}, .{ .font = .theme(.heading) });
+    dvui.labelNoFmt(@src(), i18n.t("panel_server"), .{}, .{ .font = .theme(.heading) });
 
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
     defer row.deinit();
-    dvui.labelNoFmt(@src(), "Status: ", .{}, .{});
+    dvui.labelNoFmt(@src(), i18n.t("label_status"), .{}, .{});
     dvui.labelNoFmt(@src(), app.status_buf[0..app.status_len], .{}, .{});
 
     var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
     defer row2.deinit();
-    if (dvui.button(@src(), "Iniciar", .{}, .{})) startBridge(app);
-    if (dvui.button(@src(), "Parar", .{}, .{})) stopBridge(app);
-    dvui.labelNoFmt(@src(), "  modo: ", .{}, .{});
+    if (dvui.button(@src(), i18n.t("btn_start"), .{}, .{})) startBridge(app);
+    if (dvui.button(@src(), i18n.t("btn_stop"), .{}, .{})) stopBridge(app);
+    dvui.labelNoFmt(@src(), i18n.t("label_mode"), .{}, .{});
     dvui.labelNoFmt(@src(), app.cfg.server_mode, .{}, .{});
-    dvui.labelNoFmt(@src(), "  porta cfg: ", .{}, .{});
+    dvui.labelNoFmt(@src(), i18n.t("label_port_cfg"), .{}, .{});
     dvui.labelNoFmt(@src(), app.port_buf[0..portBufLen(app)], .{}, .{});
 }
 
@@ -783,28 +827,28 @@ fn hostBufLen(app: *App) usize {
 }
 
 fn renderClientPanel(app: *App) void {
-    dvui.label(@src(), "Cliente (xemonitor)", .{}, .{ .font = .theme(.heading) });
+    dvui.labelNoFmt(@src(), i18n.t("panel_client"), .{}, .{ .font = .theme(.heading) });
 
-    dvui.label(@src(), "Destino (host:porta)", .{}, .{ .color_text = .gray });
+    dvui.labelNoFmt(@src(), i18n.t("label_dest"), .{}, .{ .color_text = .gray });
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
     defer row.deinit();
     var te_host = dvui.textEntry(@src(), .{ .text = .{ .buffer = &app.host_buf } }, .{ .max_size_content = .width(160) });
     te_host.deinit();
-    dvui.labelNoFmt(@src(), "  :  ", .{}, .{});
+    dvui.labelNoFmt(@src(), i18n.t("label_colon_sep"), .{}, .{});
     var te_port = dvui.textEntry(@src(), .{ .text = .{ .buffer = &app.port_buf } }, .{ .max_size_content = .width(60) });
     te_port.deinit();
 
     var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
     defer row2.deinit();
     const running = app.client.running.load(.seq_cst);
-    dvui.labelNoFmt(@src(), "Status: ", .{}, .{});
-    dvui.labelNoFmt(@src(), if (running) "rodando" else "parado", .{}, .{});
-    if (dvui.button(@src(), "Iniciar", .{}, .{})) {
+    dvui.labelNoFmt(@src(), i18n.t("label_status"), .{}, .{});
+    dvui.labelNoFmt(@src(), if (running) i18n.t("status_running") else i18n.t("status_stopped"), .{}, .{});
+    if (dvui.button(@src(), i18n.t("btn_start"), .{}, .{})) {
         app.setCfgHostPort();
         startClient(app);
     }
-    if (dvui.button(@src(), "Parar", .{}, .{})) stopClient(app);
-    if (dvui.button(@src(), "Log", .{}, .{})) app.log_open = true;
+    if (dvui.button(@src(), i18n.t("btn_stop"), .{}, .{})) stopClient(app);
+    if (dvui.button(@src(), i18n.t("btn_log"), .{}, .{})) app.log_open = true;
 }
 
 // ---------- export scans ----------
@@ -839,52 +883,54 @@ fn copyToClipboard(app: *App, payload: []const u8) bool {
 }
 
 fn exportScansToFile(app: *App, payload: []const u8) void {
+    var title_buf: [96]u8 = undefined;
+    const title_arg = std.fmt.bufPrint(&title_buf, "--title={s}", .{i18n.t("export_dialog_title")}) catch "--title=xemonitor";
     const argv: []const []const u8 = &.{
         "zenity", "--file-selection", "--save",
-        "--title=Exportar scans (XeMonitor)",
+        title_arg,
         "--filename=xemonitor-scans.txt",
     };
     const res = runCommand(app.gpa, app.io, argv);
     if (!res.ok or res.stdout.len == 0) {
-        app.setMsg("export cancelado", .{});
+        app.setMsg("msg_export_cancelled", .{});
         return;
     }
     const path = std.mem.trim(u8, res.stdout, " \t\r\n");
     if (path.len == 0) {
-        app.setMsg("export cancelado", .{});
+        app.setMsg("msg_export_cancelled", .{});
         return;
     }
     std.Io.Dir.cwd().writeFile(app.io, .{ .sub_path = path, .data = payload }) catch |err| {
-        app.setMsg("erro ao gravar {s}: {s}", .{ path, @errorName(err) });
+        app.setMsg("msg_write_error", .{ path, @errorName(err) });
         return;
     };
-    app.setMsg("exportado {d} scans: {s}", .{ app.scans.items.len, path });
+    app.setMsg("msg_exported", .{ app.scans.items.len, path });
 }
 
 fn renderHistoryPanel(app: *App) void {
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
         defer row.deinit();
-        dvui.label(@src(), "Histórico (últimos scans)", .{}, .{ .font = .theme(.heading) });
+        dvui.labelNoFmt(@src(), i18n.t("panel_history"), .{}, .{ .font = .theme(.heading) });
         dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
-        if (dvui.button(@src(), "Copiar", .{}, .{})) {
+        if (dvui.button(@src(), i18n.t("btn_copy"), .{}, .{})) {
             if (scansPayload(app)) |payload| {
                 defer app.gpa.free(payload);
                 if (copyToClipboard(app, payload)) {
-                    app.setMsg("copiado {d} scans para a área de transferência", .{app.scans.items.len});
+                    app.setMsg("msg_copied", .{app.scans.items.len});
                 } else {
-                    app.setMsg("falha ao copiar (wl-copy indisponível?)", .{});
+                    app.setMsg("msg_copy_failed", .{});
                 }
             } else {
-                app.setMsg("nenhum scan para copiar", .{});
+                app.setMsg("msg_no_scans_copy", .{});
             }
         }
-        if (dvui.button(@src(), "Exportar arquivo", .{}, .{})) {
+        if (dvui.button(@src(), i18n.t("btn_export"), .{}, .{})) {
             if (scansPayload(app)) |payload| {
                 defer app.gpa.free(payload);
                 exportScansToFile(app, payload);
             } else {
-                app.setMsg("nenhum scan para exportar", .{});
+                app.setMsg("msg_no_scans_export", .{});
             }
         }
     }
@@ -892,7 +938,7 @@ fn renderHistoryPanel(app: *App) void {
     var box = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
     defer box.deinit();
     if (app.scans.items.len == 0) {
-        dvui.labelNoFmt(@src(), "(nenhum scan ainda)", .{}, .{});
+        dvui.labelNoFmt(@src(), i18n.t("status_no_scans"), .{}, .{});
     }
     for (app.scans.items, 0..) |s, i| {
         var buf: [256]u8 = undefined;
@@ -904,22 +950,42 @@ fn renderHistoryPanel(app: *App) void {
 fn renderLogWindow(app: *App) void {
     const os_win = dvui.osWindow(
         @src(),
-        .{ .title = "XeMonitor - Log", .size = .{ .w = 560.0, .h = 420.0 }, .min_size = .{ .w = 320.0, .h = 200.0 } },
+        .{ .title = i18n.t("win_log_title"), .size = .{ .w = 560.0, .h = 420.0 }, .min_size = .{ .w = 320.0, .h = 200.0 } },
         .{ .id_extra = 1, .open_flag = &app.log_open },
     );
     defer os_win.deinit();
 
-    dvui.label(@src(), "Log (xemonitor)", .{}, .{ .font = .theme(.heading) });
+    dvui.labelNoFmt(@src(), i18n.t("log_heading"), .{}, .{ .font = .theme(.heading) });
     var scroll = dvui.scrollArea(@src(), .{ .vertical = .auto, .horizontal = .auto, .vertical_bar = .auto, .horizontal_bar = .auto }, .{ .expand = .both, .min_size_content = .{ .w = 0, .h = 200 } });
     defer scroll.deinit();
     var box = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
     defer box.deinit();
     if (app.log_lines.items.len == 0) {
-        dvui.labelNoFmt(@src(), "(log vazio)", .{}, .{});
+        dvui.labelNoFmt(@src(), i18n.t("status_log_empty"), .{}, .{});
     }
     for (app.log_lines.items, 0..) |ll, i| {
         dvui.labelNoFmt(@src(), ll.line, .{}, .{ .id_extra = i });
     }
+}
+
+/// Diálogo de confirmação de encerramento (botão "Encerrar" ou bandeja "Sair").
+/// Confirmar encerra o GUI; cancelar/fechar mantém rodando.
+fn renderConfirmQuitWindow(app: *App) void {
+    if (!app.quit_confirm_open) return;
+    const win = dvui.osWindow(
+        @src(),
+        .{ .title = i18n.t("dlg_quit_title"), .size = .{ .w = 340.0, .h = 150.0 }, .min_size = .{ .w = 300.0, .h = 130.0 } },
+        .{ .id_extra = 2, .open_flag = &app.quit_confirm_open },
+    );
+    defer win.deinit();
+
+    dvui.labelNoFmt(@src(), i18n.t("dlg_quit_heading"), .{}, .{ .font = .theme(.heading) });
+    dvui.labelNoFmt(@src(), i18n.t("dlg_quit_body"), .{}, .{});
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 12, .h = 4 } });
+    defer row.deinit();
+    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
+    if (dvui.button(@src(), i18n.t("btn_cancel"), .{}, .{})) app.quit_confirm_result = .cancel;
+    if (dvui.button(@src(), i18n.t("btn_quit"), .{}, .{})) app.quit_confirm_result = .yes;
 }
 
 fn guiFrame(app: *App) bool {
@@ -930,7 +996,7 @@ fn guiFrame(app: *App) bool {
     defer vbox.deinit();
 
     dvui.label(@src(), "XeMonitor", .{}, .{ .font = .theme(.title) });
-    dvui.labelNoFmt(@src(), "scanner -> bridge (TCP) -> injeção de teclado", .{}, .{});
+    dvui.labelNoFmt(@src(), i18n.t("subtitle"), .{}, .{});
 
     _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
 
@@ -939,12 +1005,37 @@ fn guiFrame(app: *App) bool {
     renderClientPanel(app);
     _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
     renderHistoryPanel(app);
+    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
+
+    var lang_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer lang_row.deinit();
+    dvui.labelNoFmt(@src(), i18n.t("lang_label"), .{}, .{});
+    const lang_names = [_][]const u8{ "English", "Português (BR)" };
+    var lang_idx: usize = @intFromEnum(app.locale);
+    if (dvui.dropdown(@src(), &lang_names, .{ .choice = &lang_idx }, .{}, .{})) {
+        app.locale = @enumFromInt(lang_idx);
+        i18n.setLocale(app.locale);
+        const lang_str = i18n.Locale.toString(app.locale);
+        app.gpa.free(app.cfg.lang);
+        app.cfg.lang = app.gpa.dupe(u8, lang_str) catch "";
+        saveConfig(app.gpa, app.io, app.config_path, &app.cfg);
+    }
+    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
+
+    var quit_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer quit_row.deinit();
+    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
+    if (dvui.button(@src(), i18n.t("btn_quit"), .{}, .{})) {
+        app.quit_confirm_open = true;
+        app.quit_confirm_result = .none;
+    }
 
     if (app.msg_len > 0) {
         dvui.labelNoFmt(@src(), app.msg_buf[0..app.msg_len], .{}, .{});
     }
 
     if (app.log_open) renderLogWindow(app);
+    renderConfirmQuitWindow(app);
 
     return true;
 }
@@ -1052,6 +1143,8 @@ pub fn main(init: std.process.Init) !u8 {
     defer tray.stop();
 
     var hidden = false;
+    var quit_pending = false;
+    var quit_was_hidden = false;
 
     if (app.cfg.auto_start) {
         startBridge(&app);
@@ -1078,13 +1171,28 @@ pub fn main(init: std.process.Init) !u8 {
                 hidden = true;
             }
         }
+        // bandeja "Sair": pede confirmação (mostra a janela se estiver oculta).
+        // Sem bandeja, encerra direto.
         if (tray.takeQuitRequest()) {
-            window_open = false;
+            if (tray_active) {
+                quit_pending = true;
+                if (hidden) {
+                    quit_was_hidden = true;
+                    showAppWindow(&backend);
+                    hidden = false;
+                }
+                app.quit_confirm_open = true;
+                app.quit_confirm_result = .none;
+            } else {
+                break :main_loop;
+            }
         }
 
-        // closing via window "X": hide to tray if available, otherwise quit
+        // fechar pela "X": oculta no tray (se houver); senão encerra.
         if (!window_open) {
-            if (tray_active and !tray.takeQuitRequest()) {
+            if (quit_pending) {
+                window_open = true; // mantém vivo enquanto o diálogo está aberto
+            } else if (tray_active) {
                 window_open = true;
                 hideAppWindow(&backend);
                 hidden = true;
@@ -1095,6 +1203,26 @@ pub fn main(init: std.process.Init) !u8 {
 
         const keep = guiFrame(&app);
         if (!keep) break :main_loop;
+
+        // fechado pela "X" do próprio diálogo = cancelar
+        if (quit_pending and !app.quit_confirm_open and app.quit_confirm_result == .none) {
+            app.quit_confirm_result = .cancel;
+        }
+
+        switch (app.quit_confirm_result) {
+            .yes => break :main_loop,
+            .cancel => {
+                app.quit_confirm_result = .none;
+                app.quit_confirm_open = false;
+                quit_pending = false;
+                if (quit_was_hidden and !windowIsHidden(&backend)) {
+                    hideAppWindow(&backend);
+                    hidden = true;
+                }
+                quit_was_hidden = false;
+            },
+            .none => {},
+        }
 
         if (app.nowNs() - last_watchdog_at >= 5 * ns_per_s) {
             last_watchdog_at = app.nowNs();

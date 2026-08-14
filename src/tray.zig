@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const os = builtin.os.tag;
+const i18n = @import("i18n.zig");
 
 /// System tray integration without orphan subprocesses.
 /// - Windows: Shell_NotifyIconW on a dedicated message-only window.
@@ -289,8 +290,8 @@ const windows = if (os == .windows) struct {
 
     fn showMenu(t: *Tray) void {
         const h_menu = CreatePopupMenu() orelse return;
-        _ = AppendMenuW(h_menu, MF_STRING, ID_SHOW, wstr(&classBuf, "Mostrar janela"));
-        _ = AppendMenuW(h_menu, MF_STRING, ID_QUIT, wstr(&classBuf2, "Sair"));
+        _ = AppendMenuW(h_menu, MF_STRING, ID_SHOW, wstr(&classBuf, i18n.t("tray_show")));
+        _ = AppendMenuW(h_menu, MF_STRING, ID_QUIT, wstr(&classBuf2, i18n.t("tray_quit")));
         var pt: POINT = undefined;
         _ = GetCursorPos(&pt);
         const cmd = TrackPopupMenu(h_menu, TPM_RIGHTBUTTON | TPM_RETURNCMD, pt.x, pt.y, 0, g_hwnd, null);
@@ -631,8 +632,8 @@ const linux = if (os == .linux) struct {
         const revision: u32 = 1;
         appendBasic(&riter, c.DBUS_TYPE_UINT32, revision);
         appendMenuItem(&riter, 0, "XeMonitor", &.{
-            .{ .id = MENU_SHOW, .label = "Mostrar janela" },
-            .{ .id = MENU_QUIT, .label = "Sair" },
+            .{ .id = MENU_SHOW, .label = i18n.t("tray_show") },
+            .{ .id = MENU_QUIT, .label = i18n.t("tray_quit") },
         });
         _ = c.dbus_connection_send(conn, reply, null);
         c.dbus_message_unref(reply);

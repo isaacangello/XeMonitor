@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **i18n (inglês padrão + PT-BR)** — nova `src/i18n.zig` com as duas tabelas de
+  strings (`us`/`pt_br`), seletor de idioma no painel do GUI e chave `lang` no
+  config (padrão `us`). Todas as strings da interface (painéis, botões, status,
+  mensagens `setMsg`, diálogo de encerramento, janela de log, exportação, bandeja)
+  migraram para `i18n.t("chave")`. Chaves divergentes entre as tabelas falham em
+  tempo de compilação; formatação runtime de `{s}`/`{d}` em `formatInto`.
+- **Diálogo de confirmação de encerramento** — botão "Encerrar" e bandeja "Sair"
+  agora pedem confirmação; "Cancelar"/fechar mantém o GUI rodando. Sem bandeja, o
+  X continua encerrando direto.
+
+### Fixed
+- **Deadlock no `ManagedProc.stop()`** — a thread `waiter` segura o mutex durante
+  o `wait` bloqueante do filho vivo, então o `stop()` que travava no `mutex.lock`
+  nunca sinalizava o filho. Agora o `stop()` mata por pid primeiro
+  (SIGTERM → SIGKILL fallback em 500ms) antes de adquirir o mutex; o encerramento
+  do GUI para bridge/cliente nunca mais trava (guardado com `os != .windows`).
+- **Panic `@memcpy` alias no status** — `computeBridgeStatus` grava direto em
+  `status_buf` (modo subprocesso); `refreshStatus` agora pula o memcpy quando o
+  ponteiro é o próprio buffer.
+
 ## [0.3.1] — 2026-08-14
 
 ### Changed
