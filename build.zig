@@ -187,8 +187,13 @@ pub fn build(b: *std.Build) void {
     gui.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     gui.root_module.addImport("sdl3-backend", dvui_dep.module("sdl3"));
     if (target.result.os.tag == .linux) {
-        // StatusNotifierItem tray via libdbus (session bus); pkg-config supplies include paths
+        // StatusNotifierItem tray via libdbus (session bus); pkg-config supplies include paths.
         gui.root_module.linkSystemLibrary("dbus-1", .{});
+        // Debian/Ubuntu multiarch: libdbus-1.so fica fora do path padrão do
+        // linker; adiciona o dir apenas quando existir (no Arch /usr/lib resolve).
+        if (pathExists(b, "/usr/lib/x86_64-linux-gnu")) {
+            gui.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
+        }
     }
     const gui_install = b.addInstallArtifact(gui, .{});
     const gui_step = b.step("gui", "Build the cross-platform GUI (DVUI + SDL3)");
