@@ -22,6 +22,7 @@
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
+INSTALL_VERSION="1.1.0"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
@@ -44,6 +45,7 @@ grupos de acesso serial (uucp/dialout) e instala o servico do bridge:
 Opcoes:
   --prefix <dir>   prefixo de instalacao (padrao: /usr/local)
   --no-service     nao instala/inicia o servico (so binarios + udev)
+  --version|-V     mostra a versao do instalador e sai
   --help           mostra esta ajuda
 
 Variaveis uteis (para testes/avancado):
@@ -56,6 +58,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --prefix) PREFIX="${2:-/usr/local}"; shift 2 ;;
         --no-service) SERVICE=0; shift ;;
+        --version|-V) printf 'XeMonitor installer %s\n' "$INSTALL_VERSION"; exit 0 ;;
         --help|-h) usage; exit 0 ;;
         *) shift ;;
     esac
@@ -64,9 +67,50 @@ done
 BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/${VERSION}/download}"
 [ "$VERSION" = "latest" ] && BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
 
-log()  { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[aviso]\033[0m %s\n' "$*"; }
-die()  { printf '\033[1;31m[erro]\033[0m %s\n' "$*" >&2; exit 1; }
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# ---------- 0. cores do terminal ----------
+COLORS_LIB_URL="https://raw.githubusercontent.com/isaacangello/bash_colors_lib/refs/heads/main/bash_colors_lib.sh"
+
+# baixa e ativa a biblioteca de cores (opcional: sem rede => mensagens sem cor)
+load_colors() {
+    command -v curl >/dev/null 2>&1 || return 1
+    curl -fsSL --max-time 8 "$COLORS_LIB_URL" -o "$TMP/bash_colors_lib.sh" 2>/dev/null || return 1
+    # shellcheck source=/dev/null
+    source "$TMP/bash_colors_lib.sh"
+}
+
+if load_colors; then
+    C_GREEN="$(printf '%b' "${green:-}")"
+    C_YELLOW="$(printf '%b' "${yellow:-}")"
+    C_RED="$(printf '%b' "${red:-}")"
+    C_BLUE="$(printf '%b' "${blue:-}")"
+    C_CIANO="$(printf '%b' "${ciano:-}")"
+    C_NC="$(printf '%b' "${NC:-}")"
+else
+    C_GREEN=""; C_YELLOW=""; C_RED=""; C_BLUE=""; C_CIANO=""; C_NC=""
+fi
+
+log()  { printf "${C_GREEN}[install]${C_NC} %s\n" "$*"; }
+warn() { printf "${C_YELLOW}[aviso]${C_NC} %s\n" "$*"; }
+die()  { printf "${C_RED}[erro]${C_NC} %s\n" "$*" >&2; exit 1; }
+
+# avisa (sem abortar) se existir uma versao mais nova deste instalador no repo
+check_update() {
+    command -v curl >/dev/null 2>&1 || return 0
+    local remote
+    remote="$(curl -fsSL --max-time 8 "https://raw.githubusercontent.com/${REPO}/main/install.sh" 2>/dev/null || true)"
+    [ -n "$remote" ] || return 0
+    local remote_ver
+    remote_ver="$(printf '%s\n' "$remote" | sed -n 's/^INSTALL_VERSION="\([^"]*\)".*/\1/p' | head -n1)"
+    [ -n "$remote_ver" ] || return 0
+    if [ "$remote_ver" != "$INSTALL_VERSION" ]; then
+        warn "existe uma versao mais nova do instalador (${remote_ver}); a sua e ${INSTALL_VERSION}."
+        warn "atualize com: curl -LsSf https://raw.githubusercontent.com/${REPO}/main/install.sh | bash"
+    fi
+    return 0
+}
 
 # roda um comando com privilegios (sudo quando nao for root); sem re-exec
 sudo_run() {
@@ -86,6 +130,8 @@ fi
 
 command -v curl >/dev/null 2>&1 || die "curl nao encontrado. Instale-o (pacman -S curl / apt install curl / apk add curl)."
 
+check_update || true
+
 # ---------- 2. detectar init ----------
 INIT="none"
 if [ -d /run/systemd/system ] || command -v systemctl >/dev/null 2>&1; then
@@ -95,9 +141,6 @@ elif [ -f /etc/openrc ] || command -v rc-service >/dev/null 2>&1; then
 fi
 
 # ---------- 3. baixar binarios ----------
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-
 log "baixando ${TARBALL} (v${VERSION})..."
 curl -fsSL "${BASE_URL}/${TARBALL}" -o "${TMP}/${TARBALL}" || die "falha no download de ${BASE_URL}/${TARBALL}"
 tar -xzf "${TMP}/${TARBALL}" -C "$TMP" || die "falha ao extrair o tarball (arquivo corrompido?)."
@@ -106,7 +149,14 @@ BIN_DIR="${PREFIX}/bin"
 sudo_run mkdir -p "$BIN_DIR"
 sudo_run install -m 0755 "$TMP/xemonitor"      "$BIN_DIR/xemonitor"
 sudo_run install -m 0755 "$TMP/xemonitor-bridge" "$BIN_DIR/xemonitor-bridge"
-log "binarios instalados em ${BIN_DIR}/ (xemonitor, xemonitor-bridge)"
+GUI_INSTALLED=0
+if [ -f "$TMP/xemonitor-gui" ]; then
+    sudo_run install -m 0755 "$TMP/xemonitor-gui" "$BIN_DIR/xemonitor-gui"
+    GUI_INSTALLED=1
+fi
+log "binarios instalados em ${BIN_DIR}/ (xemonitor, xemonitor-bridge${GUI_INSTALLED:+, xemonitor-gui})"
+GUI_SUMMARY=""
+[ "$GUI_INSTALLED" = "1" ] && GUI_SUMMARY="  ${C_BLUE}GUI:${C_NC}     ${BIN_DIR}/xemonitor-gui (bandeja; inicia no login)"
 
 sudo_run mkdir -p "${PREFIX}/share/xemonitor"
 printf '%s\n' "$VERSION" | sudo_run tee "${PREFIX}/share/xemonitor/VERSION" > /dev/null
@@ -122,6 +172,101 @@ if [ -d /etc/udev/rules.d ]; then
     fi
 else
     warn "diretorio /etc/udev/rules.d nao encontrado; pule a regra udev."
+fi
+
+# ---------- 4b. icone do app (hicolor) ----------
+ICON_DIR="${PREFIX}/share/icons/hicolor/scalable/apps"
+sudo_run mkdir -p "$ICON_DIR"
+cat > "$TMP/xemonitor.svg" <<'SVGEOF'
+<!-- XeMonitor app icon (Tabler barcode, MIT) -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 7v-1a2 2 0 0 1 2 -2h2" />
+  <path d="M4 17v1a2 2 0 0 0 2 2h2" />
+  <path d="M16 4h2a2 2 0 0 1 2 2v1" />
+  <path d="M16 20h2a2 2 0 0 0 2 -2v-1" />
+  <path d="M5 11h1v2h-1l0 -2" />
+  <path d="M10 11l0 2" />
+  <path d="M14 11h1v2h-1l0 -2" />
+  <path d="M19 11l0 2" />
+</svg>
+SVGEOF
+sudo_run install -m 0644 "$TMP/xemonitor.svg" "${ICON_DIR}/xemonitor.svg"
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    sudo_run gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
+fi
+log "icone instalado em ${ICON_DIR}/xemonitor.svg"
+
+# ---------- 4c. desktop entry + autostart + pasta central de config ----------
+if [ "$GUI_INSTALLED" = "1" ]; then
+    # .desktop do app (menu/taskbar + icone da janela no Wayland)
+    cat > "$TMP/xemonitor.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=XeMonitor
+Comment=Scanner Honeywell 1900 como teclado virtual
+Exec=${BIN_DIR}/xemonitor-gui
+Icon=xemonitor
+Terminal=false
+Categories=Utility;
+EOF
+    sudo_run install -d "${PREFIX}/share/applications"
+    sudo_run install -m 0644 "$TMP/xemonitor.desktop" "${PREFIX}/share/applications/xemonitor.desktop"
+    log "desktop entry instalado (${PREFIX}/share/applications/xemonitor.desktop)."
+
+    if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
+        USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+        [ -n "$USER_HOME" ] || USER_HOME="$HOME"
+
+        # autostart no login: GUI + cliente (o bridge ja e servico de sistema)
+        AUTOSTART_DIR="$USER_HOME/.config/autostart"
+        sudo_run mkdir -p "$AUTOSTART_DIR"
+        sudo_run install -m 0644 "$TMP/xemonitor.desktop" "$AUTOSTART_DIR/xemonitor.desktop"
+        sudo_run chown -R "$REAL_USER" "$USER_HOME/.config/autostart" 2>/dev/null || true
+        log "autostart instalado ($AUTOSTART_DIR/xemonitor.desktop) — GUI inicia no login."
+
+        # pasta central de config/log do usuario + config padrao (auto_start)
+        CFG_DIR_USER="$USER_HOME/.config/xemonitor"
+        sudo_run mkdir -p "$CFG_DIR_USER"
+        if [ ! -f "$CFG_DIR_USER/xemonitor-gui.conf" ]; then
+            cat > "$TMP/xemonitor-gui.conf" <<EOF
+tcp_host=127.0.0.1
+tcp_port=9000
+server_mode=systemd-system
+bridge_path=${BIN_DIR}/xemonitor-bridge
+client_path=${BIN_DIR}/xemonitor
+log_path=${CFG_DIR_USER}/xemonitor.log
+auto_start=true
+tray_enabled=true
+EOF
+            sudo_run install -m 0644 "$TMP/xemonitor-gui.conf" "$CFG_DIR_USER/xemonitor-gui.conf"
+        fi
+        sudo_run chown -R "$REAL_USER" "$CFG_DIR_USER" 2>/dev/null || true
+        log "config central em ${CFG_DIR_USER}/ (xemonitor-gui.conf, log e pids)."
+    fi
+
+    # unit systemd de usuario (alternativa ao autostart; NAO habilitada por
+    # padrao para nao iniciar o GUI duas vezes no login)
+    if [ "$INIT" = "systemd" ]; then
+        cat > "$TMP/xemonitor-gui.service" <<EOF
+[Unit]
+Description=XeMonitor GUI (bandeja)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=${BIN_DIR}/xemonitor-gui --no-replace
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+        sudo_run install -d /etc/systemd/user
+        sudo_run install -m 0644 "$TMP/xemonitor-gui.service" /etc/systemd/user/xemonitor-gui.service
+        sudo_run systemctl daemon-reload >/dev/null 2>&1 || true
+        log "unit systemd de usuario disponivel (/etc/systemd/user/xemonitor-gui.service)."
+        log "para usar no lugar do autostart: systemctl --user enable xemonitor-gui.service"
+    fi
 fi
 
 # ---------- 5. grupos de acesso serial ----------
@@ -191,13 +336,19 @@ else
 fi
 cat <<EOF
 
-============================================================
-  XeMonitor instalado!
+${C_CIANO}============================================================${C_NC}
+  ${C_CIANO}XeMonitor instalado!${C_NC}
   Versao: ${VERSION} (veja ${PREFIX}/share/xemonitor/VERSION)
+  Instalador: ${INSTALL_VERSION}
   Init:   ${INIT}
-------------------------------------------------------------
-  Bridge:  ${BIN_DIR}/xemonitor-bridge   (serial -> TCP :9000)
-  Cliente: ${BIN_DIR}/xemonitor
+${C_CIANO}------------------------------------------------------------${C_NC}
+  ${C_BLUE}Bridge:${C_NC}  ${BIN_DIR}/xemonitor-bridge   (serial -> TCP :9000)
+  ${C_BLUE}Cliente:${C_NC} ${BIN_DIR}/xemonitor
+${GUI_SUMMARY}
+
+  Config central (Linux): ~/.config/xemonitor/
+    xemonitor-gui.conf | xemonitor.log | pids
+  Status/diagnostico:  ./status_xemonitor.sh
 
   ${SERVICE_MSG}
     echo 'exemplo' | ${BIN_DIR}/xemonitor --stdin
@@ -205,5 +356,5 @@ cat <<EOF
     ${BIN_DIR}/xemonitor --tcp 127.0.0.1:9000
 
   Para reconfigurar o scanner: ver AGENTS.md / TODO.md
-============================================================
+${C_CIANO}============================================================${C_NC}
 EOF

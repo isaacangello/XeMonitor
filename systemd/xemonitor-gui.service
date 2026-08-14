@@ -1,0 +1,12 @@
+[Unit]
+Description=XeMonitor GUI (bandeja)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xemonitor-gui --no-replace
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

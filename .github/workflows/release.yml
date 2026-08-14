@@ -26,18 +26,27 @@ jobs:
           /opt/zig/zig version
           mkdir -p ~/.cache/zig/tmp
 
+      - name: Install GUI dependencies (SDL3 + dbus headers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl3-dev libdbus-1-dev
+
       - name: Build xemonitor (x86_64-linux-musl)
         run: zig build -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
 
       - name: Build bridge (x86_64-linux-musl)
         run: zig build bridge -Doptimize=ReleaseSafe
 
+      - name: Build GUI (x86_64-linux-gnu, SDL3/dbus do sistema)
+        run: zig build gui -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
+
       - name: Package release tarball
         run: |
           mkdir -p dist
           cp zig-out/bin/xemonitor dist/xemonitor
           cp zig-out/bin/bridge dist/xemonitor-bridge
-          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge
+          cp zig-out/bin/xemonitor-gui dist/xemonitor-gui
+          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui
           sha256sum xemonitor-linux-x86_64.tar.gz | tee xemonitor-linux-x86_64.tar.gz.sha256
 
       - name: Publish release
