@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/bash -c 'for i in $(seq 1 60); do [ -c /dev/ttyUSB0 ] && exit 0; sleep 1; done; exit 1'
-ExecStart=/usr/local/bin/xemonitor-bridge
+ExecStart=/usr/local/bin/xemonitor-bridge --verbose
 Restart=always
 RestartSec=3
 

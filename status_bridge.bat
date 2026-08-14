@@ -5,6 +5,20 @@ echo  Status do Bridge (WSL2) e XeMonitor
 echo ========================================
 echo.
 
+echo --- Pasta central de config/log (%%APPDATA%%\xemonitor) ---
+if exist "%APPDATA%\xemonitor" (
+    echo [OK] %APPDATA%\xemonitor
+    dir /b "%APPDATA%\xemonitor" 2>nul | findstr /R "xemonitor.log xemonitor.pid xemonitor_tray.pid" >nul 2>&1
+    if %errorlevel% equ 0 (echo [OK] arquivos de log/pid presentes.) else (echo [INFO] ainda sem log/pid (rode o xemonitor).)
+    if exist "%APPDATA%\xemonitor\xemonitor.log" (
+        echo --- ultimas linhas do log ---
+        powershell -NoProfile -Command "Get-Content '%APPDATA%\xemonitor\xemonitor.log' -Tail 5"
+    )
+) else (
+    echo [AVISO] %%APPDATA%%\xemonitor nao existe ainda (rode o xemonitor.exe).
+)
+echo.
+
 echo --- Servico systemd 'xemonitor-bridge' ---
 wsl systemctl status xemonitor-bridge --no-pager 2>&1 | findstr /C:"Loaded" /C:"Active" /C:"Main PID" /C:"CGroup"
 echo.
