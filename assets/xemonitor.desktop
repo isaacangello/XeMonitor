@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=XeMonitor
+Comment=Scanner Honeywell 1900 como teclado virtual
+Exec=xemonitor-gui
+Icon=xemonitor
+Terminal=false
+Categories=Utility;

@@ -165,6 +165,35 @@ pub fn build(b: *std.Build) void {
     const test_bridge_step = b.step("test-bridge", "Run bridge tests (Linux only)");
     test_bridge_step.dependOn(&run_bridge_tests.step);
 
+    // ---- GUI executable (DVUI + SDL3, cross-platform) ----
+    const dvui_dep = b.dependency("dvui", .{
+        .target = target,
+        .optimize = optimize,
+        .backend = .sdl3,
+        // keep the first build light: no freetype/tree-sitter/file dialogs
+        .freetype = false,
+        .@"tree-sitter" = false,
+        .@"tiny-file-dialogs" = false,
+    });
+    const gui = b.addExecutable(.{
+        .name = "xemonitor-gui",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/gui.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    gui.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
+    gui.root_module.addImport("sdl3-backend", dvui_dep.module("sdl3"));
+    if (target.result.os.tag == .linux) {
+        // StatusNotifierItem tray via libdbus (session bus); pkg-config supplies include paths
+        gui.root_module.linkSystemLibrary("dbus-1", .{});
+    }
+    const gui_install = b.addInstallArtifact(gui, .{});
+    const gui_step = b.step("gui", "Build the cross-platform GUI (DVUI + SDL3)");
+    gui_step.dependOn(&gui_install.step);
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.
