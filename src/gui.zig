@@ -1015,24 +1015,27 @@ fn guiFrame(app: *App) bool {
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both, .margin = .{ .x = 8, .y = 8, .w = 8, .h = 8 }, .background = true, .name = "root" });
     defer vbox.deinit();
 
-    var header = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-    defer header.deinit();
-    dvui.label(@src(), "XeMonitor", .{}, .{ .font = .theme(.title) });
-    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
-    dvui.labelNoFmt(@src(), i18n.t("lang_label"), .{}, .{});
-    const lang_names = [_][]const u8{ "English", "Português (BR)" };
-    var lang_idx: usize = @intFromEnum(app.locale);
-    if (dvui.dropdown(@src(), &lang_names, .{ .choice = &lang_idx }, .{}, .{})) {
-        app.locale = @enumFromInt(lang_idx);
-        i18n.setLocale(app.locale);
-        const lang_str = i18n.Locale.toString(app.locale);
-        app.gpa.free(app.cfg.lang);
-        app.cfg.lang = app.gpa.dupe(u8, lang_str) catch "";
-        saveConfig(app.gpa, app.io, app.config_path, &app.cfg);
-    }
-    if (dvui.button(@src(), i18n.t("btn_quit"), .{}, .{})) {
-        app.quit_confirm_open = true;
-        app.quit_confirm_result = .none;
+    // Header: título + idioma + encerrar (bloco explícito para fechar antes do subtitle)
+    {
+        var header = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer header.deinit();
+        dvui.label(@src(), "XeMonitor", .{}, .{ .font = .theme(.title) });
+        dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
+        dvui.labelNoFmt(@src(), i18n.t("lang_label"), .{}, .{});
+        const lang_names = [_][]const u8{ "English", "Português (BR)" };
+        var lang_idx: usize = @intFromEnum(app.locale);
+        if (dvui.dropdown(@src(), &lang_names, .{ .choice = &lang_idx }, .{}, .{})) {
+            app.locale = @enumFromInt(lang_idx);
+            i18n.setLocale(app.locale);
+            const lang_str = i18n.Locale.toString(app.locale);
+            app.gpa.free(app.cfg.lang);
+            app.cfg.lang = app.gpa.dupe(u8, lang_str) catch "";
+            saveConfig(app.gpa, app.io, app.config_path, &app.cfg);
+        }
+        if (dvui.button(@src(), i18n.t("btn_quit"), .{}, .{})) {
+            app.quit_confirm_open = true;
+            app.quit_confirm_result = .none;
+        }
     }
 
     dvui.labelNoFmt(@src(), i18n.t("subtitle"), .{}, .{});
