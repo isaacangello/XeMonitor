@@ -907,6 +907,12 @@ fn exportScansToFile(app: *App, payload: []const u8) void {
     app.setMsg("msg_exported", .{ app.scans.items.len, path });
 }
 
+const HistoryState = struct {
+    scroll_info: dvui.ScrollInfo = .{},
+    user_scroll: dvui.Point = .{},
+    last_len: usize = 0,
+};
+
 fn renderHistoryPanel(app: *App) void {
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
@@ -935,8 +941,14 @@ fn renderHistoryPanel(app: *App) void {
         }
     }
 
+    const state = dvui.dataGetPtrDefault(null, dvui.parentGet().data().id, "history", HistoryState, .{});
+    const stick_to_bottom = state.scroll_info.offsetFromMax(.vertical) <= 0;
+    const new_scan = state.last_len != app.scans.items.len;
+    state.last_len = app.scans.items.len;
+
+    var scroll = dvui.scrollArea(@src(), .{ .scroll_info = &state.scroll_info, .user_scroll = &state.user_scroll }, .{ .expand = .both, .margin = .{ .y = 4, .h = 4 } });
+
     var box = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
-    defer box.deinit();
     if (app.scans.items.len == 0) {
         dvui.labelNoFmt(@src(), i18n.t("status_no_scans"), .{}, .{});
     }
@@ -944,6 +956,14 @@ fn renderHistoryPanel(app: *App) void {
         var buf: [256]u8 = undefined;
         const line = std.fmt.bufPrint(&buf, "[{s}] {s}", .{ s.time, s.code }) catch continue;
         dvui.labelNoFmt(@src(), line, .{}, .{ .id_extra = i });
+    }
+    box.deinit();
+
+    // processScrollTo precisa do novo tamanho; cola no fim quando chega scan
+    // novo e o usuário já está no final (padrão stick-to-bottom do dvui).
+    scroll.deinit();
+    if (new_scan and stick_to_bottom and state.user_scroll.y >= 0) {
+        state.scroll_info.scrollToOffset(.vertical, std.math.floatMax(f32));
     }
 }
 
@@ -995,20 +1015,10 @@ fn guiFrame(app: *App) bool {
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both, .margin = .{ .x = 8, .y = 8, .w = 8, .h = 8 }, .background = true, .name = "root" });
     defer vbox.deinit();
 
+    var header = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer header.deinit();
     dvui.label(@src(), "XeMonitor", .{}, .{ .font = .theme(.title) });
-    dvui.labelNoFmt(@src(), i18n.t("subtitle"), .{}, .{});
-
-    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
-
-    renderServerPanel(app);
-    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
-    renderClientPanel(app);
-    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
-    renderHistoryPanel(app);
-    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
-
-    var lang_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-    defer lang_row.deinit();
+    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
     dvui.labelNoFmt(@src(), i18n.t("lang_label"), .{}, .{});
     const lang_names = [_][]const u8{ "English", "Português (BR)" };
     var lang_idx: usize = @intFromEnum(app.locale);
@@ -1020,15 +1030,20 @@ fn guiFrame(app: *App) bool {
         app.cfg.lang = app.gpa.dupe(u8, lang_str) catch "";
         saveConfig(app.gpa, app.io, app.config_path, &app.cfg);
     }
-    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
-
-    var quit_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
-    defer quit_row.deinit();
-    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
     if (dvui.button(@src(), i18n.t("btn_quit"), .{}, .{})) {
         app.quit_confirm_open = true;
         app.quit_confirm_result = .none;
     }
+
+    dvui.labelNoFmt(@src(), i18n.t("subtitle"), .{}, .{});
+
+    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
+
+    renderServerPanel(app);
+    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
+    renderClientPanel(app);
+    _ = dvui.separator(@src(), .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
+    renderHistoryPanel(app);
 
     if (app.msg_len > 0) {
         dvui.labelNoFmt(@src(), app.msg_buf[0..app.msg_len], .{}, .{});
@@ -1119,9 +1134,10 @@ pub fn main(init: std.process.Init) !u8 {
     defer backend.deinit();
     setWindowIcon(&backend);
 
-    var window_open = true;
+var window_open = true;
+    var theme_scheme = backend.preferredColorScheme();
     var win = try dvui.Window.init(@src(), init.gpa, backend.backend(), .{
-        .theme = switch (backend.preferredColorScheme() orelse .light) {
+        .theme = switch (theme_scheme orelse .light) {
             .light => dvui.Theme.builtin.adwaita_light,
             .dark => dvui.Theme.builtin.adwaita_dark,
         },
@@ -1156,6 +1172,18 @@ pub fn main(init: std.process.Init) !u8 {
     main_loop: while (true) {
         const nstime = win.beginWait(interrupted);
         try win.begin(nstime);
+
+        // Tema claro/escuro: reaplica quando o sistema muda (SDL3 emite
+        // SDL_EVENT_SYSTEM_THEME_CHANGED e atualiza SDL_GetSystemTheme).
+        const cur_scheme = backend.preferredColorScheme();
+        if (cur_scheme != theme_scheme) {
+            theme_scheme = cur_scheme;
+            win.themeSet(switch (cur_scheme orelse .light) {
+                .light => dvui.Theme.builtin.adwaita_light,
+                .dark => dvui.Theme.builtin.adwaita_dark,
+            });
+        }
+
         try backend.addAllEvents(&win);
 
         if (tray.takeShowRequest()) {

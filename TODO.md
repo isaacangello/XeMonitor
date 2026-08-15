@@ -16,6 +16,25 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 ### Serviço / ambiente
 - [x] Serviço systemd real `xemonitor-bridge` religado (estava parado desde 14:16)
 
+## Header + Histórico Scroll + Tema Runtime (sessão atual)
+> Layout do header, histórico com scroll/tempo real e detecção de tema.
+
+### Código
+- [x] **Header compacto** — seletor de idioma + botão "Encerrar" movidos para o topo ao lado de "XeMonitor" (dentro da mesma linha horizontal); `lang_row`/`quit_row` do rodapé removidos
+- [x] **Histórico com scroll + tempo real** — `scrollArea` vertical `.auto` (barra só quando conteúdo > viewport); *stick-to-bottom*: novo scan cola no fim quando `offsetFromMax <= 0` e usuário não scrollou (`user_scroll.y >= 0`); `HistoryState` persistido via `dvui.dataGetPtrDefault`
+- [x] **Tema claro/escuro runtime** — `theme_scheme = backend.preferredColorScheme()` no init + loop principal reaplica via `win.themeSet()` quando muda (usa `SDL_EVENT_SYSTEM_THEME_CHANGED` do portal)
+- [x] **Tamanho da janela 880x660** — geometria persistida antiga (720x520) removida (`~/.local/share/dvui/XeMonitor/window_geometry.zon`); janela agora respeita `.size` do `initWindow`
+- [x] **Limpeza instrumentação** — removidos `dbgLog`, `HistoryState.dbg_n`, logs de label rects, `history len`, `win pos`, `theme init/change`
+
+### Verificação
+- [x] `zig build` / `zig build gui` / `zig build test` — verdes (exit 0)
+- [x] Tema init = `dark` (sistema escuro via portal `color-scheme=1`)
+- [x] Switch runtime confirmado: `busctl emit SettingChanged color-scheme=2` → `theme change: light` no log
+- [x] Histórico: labels 28px empilhados (rects y=0/28/56); `virtual_size=5601` vs `viewport=496` → scrollbar ativa
+- [x] Janela: 880x660 (log dvui: `Size.Natural{ 880 660 }`)
+- [x] Screenshot `/tmp/xem_final.png` capturado (você abre para conferir header/tema/histórico)
+- [x] Config real restaurada (`systemd-system` + binários `/usr/local/bin/...`)
+
 ## Organização v0.2.0 (sessão atual)
 > Alvo: pasta central de config/log, GUI com layout/ícone melhores, autostart e
 > instruções do instalador Windows.

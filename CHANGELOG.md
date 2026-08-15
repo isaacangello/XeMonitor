@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### Added
+- **Header compacto** — seletor de idioma + botão "Encerrar" movidos para o topo
+  ao lado de "XeMonitor", liberando espaço vertical para o histórico.
+- **Histórico com scroll + tempo real** — `scrollArea` vertical auto (barra só
+  aparece quando a lista cresce); *stick-to-bottom*: quando chega scan novo e o
+  usuário está no fim, a lista rola sozinha para mostrar o item (padrão
+  `offsetFromMax <= 0` do dvui).
+- **Tema claro/escuro em runtime** — detecção no init via `SDL_GetSystemTheme()`
+  (portal `org.freedesktop.appearance/color-scheme`); reaplica automaticamente
+  quando o sistema troca o tema (usa `SDL_EVENT_SYSTEM_THEME_CHANGED` via
+  `backend.preferredColorScheme()` + `win.themeSet()` no loop principal).
+- **Tamanho da janela fixo** — geometria persistida antiga removida; janela
+  respeita `.size = 880x660` do `initWindow`.
+
+### Added
 - **i18n (inglês padrão + PT-BR)** — nova `src/i18n.zig` com as duas tabelas de
   strings (`us`/`pt_br`), seletor de idioma no painel do GUI e chave `lang` no
   config (padrão `us`). Todas as strings da interface (painéis, botões, status,
