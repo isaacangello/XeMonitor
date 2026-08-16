@@ -52,7 +52,13 @@ jobs:
           cp zig-out/bin/xemonitor-gui dist/xemonitor-gui
           cp uninstall.sh dist/xemonitor-uninstall
           chmod +x dist/xemonitor-uninstall
-          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall
+          # Ícone do app (hicolor 512x512; renomeado sem espaço p/ o tar)
+          cp "Barcode Scanner.png" dist/xemonitor.png
+          mkdir -p dist/openrc dist/systemd dist/scripts
+          cp openrc/xemonitor-bridge dist/openrc/xemonitor-bridge
+          cp systemd/xemonitor-bridge.service dist/systemd/xemonitor-bridge.service
+          cp scripts/install_bridge_service.sh dist/scripts/install_bridge_service.sh
+          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall xemonitor.png openrc systemd scripts
           sha256sum xemonitor-linux-x86_64.tar.gz | tee xemonitor-linux-x86_64.tar.gz.sha256
 
       - name: Publish release

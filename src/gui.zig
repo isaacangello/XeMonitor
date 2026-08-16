@@ -8,10 +8,6 @@ const i18n = @import("i18n.zig");
 
 const os = builtin.os.tag;
 
-const ctime = @cImport({
-    @cInclude("time.h");
-});
-
 const APP_NAME = "XeMonitor";
 const CONFIG_FILE = paths.GUI_CONFIG_FILE;
 /// Nome-base legado; o log atual é datado (xemonitor-YYYY-MM-DD.log).
@@ -49,7 +45,11 @@ fn writePidFile(io: std.Io) void {
     var f = gui_cfg_dir.dir.createFile(io, GUI_PID_FILE, .{}) catch return;
     defer f.close(io);
     var buf: [32]u8 = undefined;
-    const s = std.fmt.bufPrint(&buf, "{d}\n", .{std.os.linux.getpid()}) catch return;
+    const pid: u32 = if (os == .windows)
+        @intCast(std.os.windows.GetCurrentProcessId())
+    else
+        @intCast(std.posix.getpid());
+    const s = std.fmt.bufPrint(&buf, "{d}\n", .{pid}) catch return;
     var wbuf: [32]u8 = undefined;
     var w = f.writer(io, &wbuf);
     w.interface.writeAll(s) catch {};
@@ -169,7 +169,7 @@ fn saveConfig(gpa: std.mem.Allocator, io: std.Io, path: []const u8, cfg: *const 
 const ManagedProc = struct {
     mutex: std.Io.Mutex = .init,
     child: ?std.process.Child = null,
-    child_pid: std.atomic.Value(std.posix.pid_t) = std.atomic.Value(std.posix.pid_t).init(0),
+    child_pid: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_exit: u8 = 0,
 
@@ -218,7 +218,11 @@ const ManagedProc = struct {
         });
         self.mutex.lock(io) catch {};
         self.child = child;
-        self.child_pid.store(child.id orelse 0, .seq_cst);
+        const pid: u32 = if (comptime os == .windows) blk: {
+            const h = child.id orelse break :blk 0;
+            break :blk @intCast(@intFromPtr(h));
+        } else @intCast(child.id orelse 0);
+        self.child_pid.store(pid, .seq_cst);
         self.running.store(true, .seq_cst);
         self.mutex.unlock(io);
         self.q_mutex.lock(io) catch {};
@@ -337,6 +341,36 @@ fn runCommand(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) CmdR
     };
 }
 
+/// Localiza o bridge_ctl.bat (scripts) para controlar o bridge no modo WSL.
+/// Ordem: dirname(exe)/scripts/bridge_ctl.bat (instalado) →
+///        cwd/scripts/bridge_ctl.bat (dev) →
+///        cwd/bridge_ctl.bat (fallback). Retorna o comprimento em `out`.
+fn resolveBridgeCtl(gpa: std.mem.Allocator, io: std.Io, out: *[512]u8) usize {
+    const sep = std.fs.path.sep;
+    if (std.process.executablePathAlloc(io, gpa)) |exe| {
+        defer gpa.free(exe);
+        if (std.fs.path.dirname(exe)) |exe_dir| {
+            const p = std.fmt.bufPrint(out, "{s}{c}scripts{c}bridge_ctl.bat", .{ exe_dir, sep, sep }) catch out[0..0];
+            if (p.len > 0 and fileExists(io, p)) return p.len;
+        }
+    } else |_| {}
+    {
+        const p = std.fmt.bufPrint(out, ".{c}scripts{c}bridge_ctl.bat", .{ sep, sep }) catch out[0..0];
+        if (p.len > 0 and fileExists(io, p)) return p.len;
+    }
+    {
+        const p = std.fmt.bufPrint(out, ".{c}bridge_ctl.bat", .{sep}) catch out[0..0];
+        if (p.len > 0 and fileExists(io, p)) return p.len;
+    }
+    out[0] = 0;
+    return 0;
+}
+
+fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
+    return true;
+}
+
 // ---------- network helpers (Zig 0.16: std.Io.net) ----------
 
 fn portIsOpen(io: std.Io, host: []const u8, port: u16) bool {
@@ -405,6 +439,10 @@ const App = struct {
 
     last_scan_time_ns: i128 = 0,
     watchdog_state: u8 = 0,
+    usb_warned: bool = false,
+
+    bridge_ctl_buf: [512]u8 = undefined,
+    bridge_ctl_len: usize = 0,
 
     quit_confirm_open: bool = false,
     quit_confirm_result: ConfirmResult = .none,
@@ -426,6 +464,9 @@ const App = struct {
             port_buf[p.len] = 0;
         } else |_| {}
 
+        var bridge_ctl_buf = [_]u8{0} ** 512;
+        const bridge_ctl_len = resolveBridgeCtl(gpa, io, &bridge_ctl_buf);
+
         return .{
             .gpa = gpa,
             .io = io,
@@ -439,6 +480,8 @@ const App = struct {
             .host_buf = host_buf,
             .port_buf = port_buf,
             .locale = locale,
+            .bridge_ctl_buf = bridge_ctl_buf,
+            .bridge_ctl_len = bridge_ctl_len,
         };
     }
 
@@ -524,6 +567,21 @@ fn pushScan(app: *App, code: []const u8) void {
 // apenas estado em memoria (nao spawna processos).
 fn watchdogTick(app: *App) void {
     const client_running = app.client.running.load(.seq_cst);
+
+    // Aviso do scanner USB-Serial (CH340): no modo WSL, verifica se o
+    // /dev/ttyUSB0 existe no WSL. Sem scanner conectado, nada funciona —
+    // feedback claro para o usuario (fio a fio com o setup_usb.bat).
+    if (client_running and isMode(app, "wsl") and os == .windows) {
+        const dev_ok = runBridgeCtl(app, "dev").ok;
+        if (!dev_ok and !app.usb_warned) {
+            app.usb_warned = true;
+            app.setMsg("msg_usb_serial_missing", .{});
+        } else if (dev_ok and app.usb_warned) {
+            app.usb_warned = false;
+            app.setMsg("msg_usb_serial_found", .{});
+        }
+    }
+
     const silent_ns: i128 = if (app.last_scan_time_ns > 0)
         app.nowNs() - app.last_scan_time_ns
     else
@@ -575,13 +633,14 @@ fn drainClientLines(app: *App) void {
 fn todayDateStr(io: std.Io, buf: *[10]u8) []const u8 {
     const now_ns = std.Io.Timestamp.now(io, .real).nanoseconds;
     const secs: u64 = @intCast(@divTrunc(now_ns, ns_per_s));
-    const sec_i: ctime.time_t = @intCast(secs);
-    var tm: ctime.struct_tm = undefined;
-    _ = ctime.localtime_r(&sec_i, &tm);
+    const epoch = std.time.epoch.EpochSeconds{ .secs = secs };
+    const day = epoch.getEpochDay();
+    const year_day = day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
     return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-        @as(u32, @intCast(tm.tm_year + 1900)),
-        @as(u32, @intCast(tm.tm_mon + 1)),
-        @as(u32, @intCast(tm.tm_mday)),
+        @as(u32, @intCast(year_day.year)),
+        @as(u32, @intCast(month_day.month.numeric())),
+        @as(u32, @intCast(month_day.day_index + 1)),
     }) catch buf[0..0];
 }
 
@@ -636,7 +695,7 @@ fn runSystemdStatus(app: *App, scope: []const u8) bool {
 }
 
 fn runWslStatus(app: *App) bool {
-    return runCommand(app.gpa, app.io, &.{ "wsl", "-u", "root", "systemctl", "is-active", "xemonitor-bridge" }).ok;
+    return runBridgeCtl(app, "status").ok;
 }
 
 // Executa um comando com privilegios de root: pkexec (agente polkit) com
@@ -680,12 +739,20 @@ fn systemdAction(app: *App, scope: []const u8, action: []const u8) void {
 }
 
 fn wslAction(app: *App, action: []const u8) void {
-    const res = runCommand(app.gpa, app.io, &.{ "wsl", "-u", "root", "systemctl", action, "xemonitor-bridge" });
+    const res = runBridgeCtl(app, action);
     if (res.ok) {
         app.setMsg("msg_wsl_ok", .{action});
     } else {
         app.setMsg("msg_wsl_failed", .{action});
     }
+}
+
+/// Roda o bridge_ctl.bat no Windows (controla o serviço do bridge no WSL,
+/// detectando OpenRC/systemd). Em outros SO retorna falha.
+fn runBridgeCtl(app: *App, action: []const u8) CmdResult {
+    if (app.bridge_ctl_len == 0) return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
+    const ctl = app.bridge_ctl_buf[0..app.bridge_ctl_len];
+    return runCommand(app.gpa, app.io, &.{ "cmd", "/c", ctl, action });
 }
 
 fn startBridge(app: *App) void {
@@ -782,15 +849,36 @@ fn startClient(app: *App) void {
         return;
     };
     defer app.gpa.free(addr);
-    const argv: []const []const u8 = if (app.cfg.client_path.len > 0)
-        &.{ app.cfg.client_path, "--tcp", addr }
+    var sibling_buf: [512]u8 = undefined;
+    const client = if (app.cfg.client_path.len > 0)
+        app.cfg.client_path
+    else if (comptime os == .windows)
+        (resolveSibling(gpaOf(app), app.io, "xemonitor.exe", &sibling_buf) orelse "xemonitor")
     else
-        &.{ "xemonitor", "--tcp", addr };
+        "xemonitor";
+    const argv: []const []const u8 = &.{ client, "--tcp", addr };
     app.client.start(app.io, argv) catch |err| {
         app.setMsg("msg_client_start_failed", .{@errorName(err)});
         return;
     };
     app.setMsg("msg_client_connecting", .{addr});
+}
+
+fn gpaOf(app: *App) std.mem.Allocator {
+    return app.gpa;
+}
+
+/// Localiza `name` no diretório do executável (binário irmão). Retorna slice
+/// para `out` ou null. Usado no Windows para achar xemonitor.exe ao lado do
+/// xemonitor-gui.exe.
+fn resolveSibling(gpa: std.mem.Allocator, io: std.Io, name: []const u8, out: *[512]u8) ?[]const u8 {
+    const exe = std.process.executablePathAlloc(io, gpa) catch return null;
+    defer gpa.free(exe);
+    const exe_dir = std.fs.path.dirname(exe) orelse return null;
+    const sep = std.fs.path.sep;
+    const p = std.fmt.bufPrint(out, "{s}{c}{s}", .{ exe_dir, sep, name }) catch return null;
+    if (fileExists(io, p)) return p;
+    return null;
 }
 
 fn stopClient(app: *App) void {
@@ -865,6 +953,11 @@ fn scansPayload(app: *App) ?[]u8 {
 }
 
 fn copyToClipboard(app: *App, payload: []const u8) bool {
+    if (os == .windows) {
+        const z = std.heap.c_allocator.dupeZ(u8, payload) catch return false;
+        defer std.heap.c_allocator.free(z);
+        return SDLBackend.c.SDL_SetClipboardText(z.ptr);
+    }
     var child = std.process.spawn(app.io, .{
         .argv = &.{ "wl-copy", "--type", "text/plain" },
         .stdin = .pipe,
@@ -883,28 +976,27 @@ fn copyToClipboard(app: *App, payload: []const u8) bool {
 }
 
 fn exportScansToFile(app: *App, payload: []const u8) void {
-    var title_buf: [96]u8 = undefined;
-    const title_arg = std.fmt.bufPrint(&title_buf, "--title={s}", .{i18n.t("export_dialog_title")}) catch "--title=xemonitor";
-    const argv: []const []const u8 = &.{
-        "zenity", "--file-selection", "--save",
-        title_arg,
-        "--filename=xemonitor-scans.txt",
+    const opts = dvui.native_dialogs.Native.DialogOptions{
+        .title = i18n.t("export_dialog_title"),
+        .path = "xemonitor-scans.txt",
+        .filters = &.{"*.txt"},
+        .filter_description = "Text files (*.txt)",
     };
-    const res = runCommand(app.gpa, app.io, argv);
-    if (!res.ok or res.stdout.len == 0) {
+    const path = dvui.dialogNativeFileSave(app.gpa, opts) catch {
+        app.setMsg("msg_export_cancelled", .{});
+        return;
+    };
+    if (path == null) {
         app.setMsg("msg_export_cancelled", .{});
         return;
     }
-    const path = std.mem.trim(u8, res.stdout, " \t\r\n");
-    if (path.len == 0) {
-        app.setMsg("msg_export_cancelled", .{});
-        return;
-    }
-    std.Io.Dir.cwd().writeFile(app.io, .{ .sub_path = path, .data = payload }) catch |err| {
-        app.setMsg("msg_write_error", .{ path, @errorName(err) });
+    const p = path.?;
+    defer app.gpa.free(p);
+    std.Io.Dir.cwd().writeFile(app.io, .{ .sub_path = p, .data = payload }) catch |err| {
+        app.setMsg("msg_write_error", .{ p, @errorName(err) });
         return;
     };
-    app.setMsg("msg_exported", .{ app.scans.items.len, path });
+    app.setMsg("msg_exported", .{ app.scans.items.len, p });
 }
 
 const HistoryState = struct {
@@ -1073,12 +1165,22 @@ fn windowIsHidden(backend: *SDLBackend) bool {
         (flags & SDLBackend.c.SDL_WINDOW_MINIMIZED) != 0;
 }
 
-// Desenha o icone da janela (barras do codigo de barras) e aplica via
+// Aplica o icone da janela (PNG embutido, com fallback procedural) via
 // SDL_SetWindowIcon. Funciona em X11/Windows/macOS; no Wayland o icone do
 // painel vem do arquivo .desktop (assets/xemonitor.desktop -> Icon=xemonitor).
 fn setWindowIcon(backend: *SDLBackend) void {
+    const png = @import("png.zig");
     const W: i32 = 64;
     const H: i32 = 64;
+    var rgba: [64 * 64 * 4]u8 = undefined;
+    if (png.rgba().len != 0) {
+        png.resize(png.rgba(), png.width, png.height, &rgba, 64, 64, .rgba);
+        const surf = SDLBackend.c.SDL_CreateSurfaceFrom(W, H, SDLBackend.c.SDL_PIXELFORMAT_RGBA32, &rgba, W * 4) orelse return;
+        defer SDLBackend.c.SDL_DestroySurface(surf);
+        _ = SDLBackend.c.SDL_SetWindowIcon(backend.window, surf);
+        return;
+    }
+
     const surf = SDLBackend.c.SDL_CreateSurface(W, H, SDLBackend.c.SDL_PIXELFORMAT_RGBA32) orelse return;
     defer SDLBackend.c.SDL_DestroySurface(surf);
 

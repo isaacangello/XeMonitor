@@ -24,13 +24,18 @@ const uinput = if (builtin.os.tag == .linux) @import("uinput.zig") else struct {
     pub fn deinit() void {}
 };
 
-const ctime = @cImport({
-    @cInclude("time.h");
-});
+// Removed ctime @cImport - use std.time instead (Zig 0.16)
 
 const winapi_available = builtin.os.tag == .windows;
 const w = if (winapi_available) struct {
     const windows = std.os.windows;
+
+    // Windows constants not exposed in std.os.windows top-level in Zig 0.16
+    const GENERIC_READ: windows.DWORD = 0x80000000;
+    const GENERIC_WRITE: windows.DWORD = 0x40000000;
+    const OPEN_EXISTING: windows.DWORD = 3;
+    const FILE_ATTRIBUTE_NORMAL: windows.DWORD = 0x80;
+    const INVALID_HANDLE_VALUE: windows.HANDLE = @ptrFromInt(std.math.maxInt(usize));
 
     const DCBFlags = packed struct(u32) {
         fBinary: u1,
@@ -247,17 +252,14 @@ var log_date_valid: bool = false;
 fn todayDate(buf: *[10]u8) []const u8 {
     const now_ns = std.Io.Timestamp.now(global_io, .real).nanoseconds;
     const secs: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_s));
-    const sec_i: ctime.time_t = @intCast(secs);
-    var tm: ctime.struct_tm = undefined;
-    if (builtin.os.tag == .windows) {
-        _ = ctime.localtime_s(&tm, &sec_i);
-    } else {
-        _ = ctime.localtime_r(&sec_i, &tm);
-    }
+    const epoch_secs = std.time.epoch.EpochSeconds{ .secs = secs };
+    const epoch_day = epoch_secs.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
     return std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
-        @as(u32, @intCast(tm.tm_year + 1900)),
-        @as(u32, @intCast(tm.tm_mon + 1)),
-        @as(u32, @intCast(tm.tm_mday)),
+        year_day.year,
+        month_day.month.numeric(),
+        month_day.day_index + 1,
     }) catch buf[0..0];
 }
 
@@ -289,17 +291,15 @@ fn timestampStr(buf: *[32]u8) []const u8 {
     const secs: u64 = @intCast(@divTrunc(now_ns, std.time.ns_per_s));
     const ms: u64 = @intCast(@divTrunc(@mod(now_ns, std.time.ns_per_s), std.time.ns_per_ms));
 
-    const sec_i: ctime.time_t = @intCast(secs);
-    var tm: ctime.struct_tm = undefined;
-    if (builtin.os.tag == .windows) {
-        _ = ctime.localtime_s(&tm, &sec_i);
-    } else {
-        _ = ctime.localtime_r(&sec_i, &tm);
-    }
+    const epoch_secs = std.time.epoch.EpochSeconds{ .secs = secs };
+    const day_seconds = epoch_secs.getDaySeconds();
+    const hour = day_seconds.getHoursIntoDay();
+    const minute = day_seconds.getMinutesIntoHour();
+    const second = day_seconds.getSecondsIntoMinute();
     return std.fmt.bufPrint(buf, "[{d:0>2}:{d:0>2}:{d:0>2}.{d:0>3}] ", .{
-        @as(u8, @intCast(tm.tm_hour)),
-        @as(u8, @intCast(tm.tm_min)),
-        @as(u8, @intCast(tm.tm_sec)),
+        hour,
+        minute,
+        second,
         ms,
     }) catch "";
 }
@@ -927,7 +927,7 @@ const SerialConnection = union(enum) {
                 if (winapi_available) {
                     var byte: [1]u8 = undefined;
                     var bytes_read: std.os.windows.DWORD = 0;
-                    if (w.ReadFile(handle, &byte, 1, &bytes_read, null) == 0) {
+                    if (w.ReadFile(handle, &byte, 1, &bytes_read, null) == w.windows.BOOL.FALSE) {
                         return error.SerialReadFailed;
                     }
                     if (bytes_read == 0) return error.EndOfStream;
@@ -976,14 +976,14 @@ fn openAndConfigureSerialWinapi(port_name: []const u8, baud_rate: u32) !SerialCo
 
     const handle = w.CreateFileA(
         path,
-        w.windows.GENERIC_READ | w.windows.GENERIC_WRITE,
+        w.GENERIC_READ | w.GENERIC_WRITE,
         0,
         null,
-        w.windows.OPEN_EXISTING,
-        w.windows.FILE_ATTRIBUTE_NORMAL,
+        w.OPEN_EXISTING,
+        w.FILE_ATTRIBUTE_NORMAL,
         null,
     );
-    if (handle == w.windows.INVALID_HANDLE_VALUE) {
+    if (handle == w.INVALID_HANDLE_VALUE) {
         const err_code = w.GetLastError();
         return switch (err_code) {
             2, 3 => error.FileNotFound,
@@ -1004,7 +1004,7 @@ fn openAndConfigureSerialWinapi(port_name: []const u8, baud_rate: u32) !SerialCo
     const mode_z = try allocator.dupeZ(u8, mode_fmt);
     defer allocator.free(mode_z);
 
-    if (w.BuildCommDCBA(mode_z, &dcb) == 0) {
+    if (w.BuildCommDCBA(mode_z, &dcb) == w.windows.BOOL.FALSE) {
         logPrint("[debug] BuildCommDCBA failed, last error={d}\n", .{w.GetLastError()});
         _ = w.CloseHandle(handle);
         return error.InvalidArgument;
@@ -1022,7 +1022,7 @@ fn openAndConfigureSerialWinapi(port_name: []const u8, baud_rate: u32) !SerialCo
 
     logPrint("[debug] DCB size={d}, trying SetCommState (baud={d})...\n", .{ @sizeOf(w.DCB), baud_rate });
 
-    if (w.SetCommState(handle, &dcb) == 0) {
+    if (w.SetCommState(handle, &dcb) == w.windows.BOOL.FALSE) {
         const err = w.GetLastError();
         logPrint("[debug] SetCommState failed, last error={d}\n", .{err});
 
@@ -1047,7 +1047,7 @@ fn openAndConfigureSerialWinapi(port_name: []const u8, baud_rate: u32) !SerialCo
         dcb.DCBlength = @sizeOf(w.DCB);
         w.Sleep(100);
 
-        if (w.SetCommState(handle, &dcb) == 0) {
+if (w.SetCommState(handle, &dcb) == w.windows.BOOL.FALSE) {
             logPrint("[debug] SetCommState (no DTR/RTS) failed too, last error={d}\n", .{w.GetLastError()});
             _ = w.CloseHandle(handle);
             return error.InvalidArgument;
@@ -1061,7 +1061,7 @@ fn openAndConfigureSerialWinapi(port_name: []const u8, baud_rate: u32) !SerialCo
         .WriteTotalTimeoutMultiplier = 0,
         .WriteTotalTimeoutConstant = 0,
     };
-    if (w.SetCommTimeouts(handle, &timeouts) == 0) {
+    if (w.SetCommTimeouts(handle, &timeouts) == w.windows.BOOL.FALSE) {
         logPrint("[debug] SetCommTimeouts failed, last error={d}\n", .{w.GetLastError()});
         _ = w.CloseHandle(handle);
         return error.InvalidArgument;
@@ -1259,7 +1259,7 @@ pub fn main(init: std.process.Init) !u8 {
     }
 
     if (winapi_available) {
-        const mutex = w.CreateMutexA(null, 1, "Global\\XeMonitor");
+        const mutex = w.CreateMutexA(null, w.windows.BOOL.TRUE, "Global\\XeMonitor");
         if (w.GetLastError() == w.ERROR_ALREADY_EXISTS) {
             logPrint("[error] another instance of xemonitor is already running.\n", .{});
             _ = w.CloseHandle(mutex);

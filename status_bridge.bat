@@ -1,9 +1,20 @@
 @echo off
 title XeMonitor - Status
+setlocal
 echo ========================================
 echo  Status do Bridge (WSL2) e XeMonitor
 echo ========================================
 echo.
+
+:: ---- Detecta distro WSL (Alpine padrao; Arch fallback) ----
+set "DISTRO="
+wsl -d Alpine echo ok >nul 2>&1
+if %errorlevel% equ 0 ( set "DISTRO=Alpine" )
+if not defined DISTRO (
+    wsl -d Arch echo ok >nul 2>&1
+    if %errorlevel% equ 0 ( set "DISTRO=Arch" )
+)
+if defined DISTRO ( echo --- Distro WSL: %DISTRO% --- ) else ( echo --- Distro WSL: nao detectada --- )
 
 echo --- Pasta central de config/log (%%APPDATA%%\xemonitor) ---
 if exist "%APPDATA%\xemonitor" (
@@ -17,8 +28,12 @@ if exist "%APPDATA%\xemonitor" (
 )
 echo.
 
-echo --- Servico systemd 'xemonitor-bridge' ---
-wsl systemctl status xemonitor-bridge --no-pager 2>&1 | findstr /C:"Loaded" /C:"Active" /C:"Main PID" /C:"CGroup"
+echo --- Servico 'xemonitor-bridge' ---
+if defined DISTRO (
+    call scripts\bridge_ctl.bat status 2>&1 | findstr /C:"active" /C:"running" /C:"started" /C:"loaded" /C:"status" /C:"stopped" /C:"dead" /C:"inactive"
+) else (
+    echo [OFF] distro nao detectada; servico nao consultado.
+)
 echo.
 
 echo --- xemonitor.exe (Windows) ---
@@ -31,15 +46,6 @@ if %errorlevel% equ 0 (
 
 echo.
 echo --- /dev/ttyUSB0 ---
-wsl ls -la /dev/ttyUSB0 2>&1
-echo.
-
-echo --- Docker (WSL) ---
-wsl systemctl is-active docker >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [OK] Docker ativo.
-) else (
-    echo [OFF] Docker inativo.
-)
+if defined DISTRO ( wsl -d %DISTRO% ls -la /dev/ttyUSB0 2>&1 ) else ( echo [OFF] distro nao detectada. )
 echo.
 pause

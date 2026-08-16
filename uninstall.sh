@@ -150,12 +150,20 @@ if [ -f "$USER_HOME/.config/autostart/xemonitor.desktop" ]; then
     sudo_run rm -f "$USER_HOME/.config/autostart/xemonitor.desktop"
 fi
 ICON_DST="${PREFIX}/share/icons/hicolor/scalable/apps/xemonitor.svg"
+ICON_PNG_DST="${PREFIX}/share/icons/hicolor/512x512/apps/xemonitor.png"
+ICON_REMOVED=0
 if [ -f "$ICON_DST" ]; then
     log "removendo icone..."
     sudo_run rm -f "$ICON_DST"
-    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
-        sudo_run gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
-    fi
+    ICON_REMOVED=1
+fi
+if [ -f "$ICON_PNG_DST" ]; then
+    log "removendo icone (png)..."
+    sudo_run rm -f "$ICON_PNG_DST"
+    ICON_REMOVED=1
+fi
+if [ "$ICON_REMOVED" = "1" ] && command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    sudo_run gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
 fi
 
 # ---------- 6. purge: remover config + logs ----------

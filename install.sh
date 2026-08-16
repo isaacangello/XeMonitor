@@ -193,9 +193,16 @@ else
 fi
 
 # ---------- 4b. icone do app (hicolor) ----------
+# PNG 512x512 (release) ou SVG fallback (Tabler barcode) no hicolor/apps.
 ICON_DIR="${PREFIX}/share/icons/hicolor/scalable/apps"
 sudo_run mkdir -p "$ICON_DIR"
-cat > "$TMP/xemonitor.svg" <<'SVGEOF'
+if [ -f "$TMP/xemonitor.png" ]; then
+    # icone novo (cores vivas, fundo transparente) em hicolor 512x512
+    sudo_run mkdir -p "${PREFIX}/share/icons/hicolor/512x512/apps"
+    sudo_run install -m 0644 "$TMP/xemonitor.png" "${PREFIX}/share/icons/hicolor/512x512/apps/xemonitor.png"
+    log "icone instalado em ${PREFIX}/share/icons/hicolor/512x512/apps/xemonitor.png"
+else
+    cat > "$TMP/xemonitor.svg" <<'SVGEOF'
 <!-- XeMonitor app icon (Tabler barcode, MIT) -->
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
   <path d="M4 7v-1a2 2 0 0 1 2 -2h2" />
@@ -208,11 +215,12 @@ cat > "$TMP/xemonitor.svg" <<'SVGEOF'
   <path d="M19 11l0 2" />
 </svg>
 SVGEOF
-sudo_run install -m 0644 "$TMP/xemonitor.svg" "${ICON_DIR}/xemonitor.svg"
+    sudo_run install -m 0644 "$TMP/xemonitor.svg" "${ICON_DIR}/xemonitor.svg"
+    log "icone instalado em ${ICON_DIR}/xemonitor.svg"
+fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     sudo_run gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
 fi
-log "icone instalado em ${ICON_DIR}/xemonitor.svg"
 
 # ---------- 4c. desktop entry + autostart + pasta central de config ----------
 if [ "$GUI_INSTALLED" = "1" ]; then
@@ -309,7 +317,12 @@ fi
 # ---------- 6. servico do bridge ----------
 if [ "$SERVICE" = "1" ]; then
     if [ "$INIT" = "systemd" ]; then
-        cat > "$TMP/xemonitor-bridge.service" <<EOF
+        # Usa a unit versionada do release quando presente (fallback: gera inline)
+        if [ -f "$TMP/systemd/xemonitor-bridge.service" ]; then
+            SVC_UNIT="$TMP/systemd/xemonitor-bridge.service"
+        else
+            SVC_UNIT="$TMP/xemonitor-bridge.service"
+            cat > "$SVC_UNIT" <<EOF
 [Unit]
 Description=XeMonitor serial-to-TCP bridge (Honeywell 1900 / CH340)
 After=network-online.target
@@ -325,13 +338,21 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-        sudo_run install -m 0644 "$TMP/xemonitor-bridge.service" /etc/systemd/system/xemonitor-bridge.service
+        fi
+        sudo_run install -m 0644 "$SVC_UNIT" /etc/systemd/system/xemonitor-bridge.service
         sudo_run systemctl daemon-reload
         sudo_run systemctl enable xemonitor-bridge >/dev/null 2>&1 || true
         sudo_run systemctl restart xemonitor-bridge 2>/dev/null || sudo_run systemctl start xemonitor-bridge || true
         log "servico systemd 'xemonitor-bridge' instalado e iniciado."
     elif [ "$INIT" = "openrc" ]; then
-        cat > "$TMP/xemonitor-bridge.init" <<EOF
+        # Usa o init script versionado do release quando presente (fallback: inline)
+        if [ -f "$TMP/openrc/xemonitor-bridge" ]; then
+            INIT_SCRIPT="$TMP/openrc/xemonitor-bridge"
+            # Substitui o caminho do binario pelo prefixo escolhido (padrao /usr/local)
+            sed -i "s|command=\"/usr/local/bin/xemonitor-bridge\"|command=\"${BIN_DIR}/xemonitor-bridge\"|" "$INIT_SCRIPT"
+        else
+            INIT_SCRIPT="$TMP/xemonitor-bridge.init"
+            cat > "$INIT_SCRIPT" <<EOF
 #!/sbin/openrc-run
 description="XeMonitor serial-to-TCP bridge (Honeywell 1900 / CH340)"
 command="${BIN_DIR}/xemonitor-bridge"
@@ -342,7 +363,8 @@ depend() {
     need net
 }
 EOF
-        sudo_run install -m 0755 "$TMP/xemonitor-bridge.init" /etc/init.d/xemonitor-bridge
+        fi
+        sudo_run install -m 0755 "$INIT_SCRIPT" /etc/init.d/xemonitor-bridge
         sudo_run rc-update add xemonitor-bridge default 2>/dev/null || true
         sudo_run rc-service xemonitor-bridge start || true
         log "servico OpenRC 'xemonitor-bridge' instalado e iniciado."

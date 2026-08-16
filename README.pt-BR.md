@@ -21,12 +21,17 @@ Se o seu leitor aparecer como **porta serial/COM** (não como teclado USB-HID), 
 
 ### Windows (fluxo ativo — driver CH340 quebrado)
 
-O driver CH340 no Windows está corrompido (erro 31 / AccessDenied), então o acesso à serial é feito via **bridge TCP no WSL2**:
+O driver CH340 no Windows está corrompido (erro 31 / AccessDenied), então o acesso à serial é feito via **bridge TCP no WSL2** (distro padrão **Alpine**/OpenRC; Arch/systemd mantido como fallback):
 
 ```
-Scanner USB-Serial (CH340) → WSL2 lê /dev/ttyUSB0 → bridge TCP :9000
-        → xemonitor.exe --tcp 127.0.0.1:9000 → SendInput (Win32 nativo) → Enter
+Scanner USB-Serial (CH340) → WSL2 (Alpine) lê /dev/ttyUSB0 → bridge TCP :9000
+        → xemonitor-gui.exe (app principal: janela + bandeja)
+            → xemonitor.exe --tcp 127.0.0.1:9000 → SendInput (Win32 nativo) → Enter
 ```
+
+O `xemonitor-gui.exe` é o **app principal no Windows**: lê
+`%APPDATA%\xemonitor\xemonitor-gui.conf` (`server_mode=wsl`, `auto_start=true`) e
+inicia o bridge (via `bridge_ctl.bat`) + o cliente automaticamente.
 
 ### Linux
 
@@ -47,9 +52,11 @@ O bridge pode rodar localmente e o `xemonitor` injeta via **teclado virtual nati
   (Windows) — **logs datados** `xemonitor-YYYY-MM-DD.log` (um arquivo novo por dia,
   verificado a cada escrita), pids e `xemonitor-gui.conf` moram todos lá
   (override `XEMONITOR_CONFIG_DIR`; fallback para o diretório atual).
-- **GUI Linux** (`xemonitor-gui`, DVUI+SDL3): ícone da janela (X11 via
-  `SDL_SetWindowIcon`; Wayland via `.desktop`), bandeja (opt-in `--tray`, padrão
-  desligado) e autostart no login via XDG (`~/.config/autostart/xemonitor.desktop`).
+- **GUI** (`xemonitor-gui`, DVUI+SDL3): janela + bandeja + controle do
+  bridge/cliente. **App principal no Windows** (modo `wsl` via `bridge_ctl.bat`);
+  no Linux com ícone da janela (X11 via `SDL_SetWindowIcon`; Wayland via
+  `.desktop`) e bandeja (opt-in `--tray`, padrão desligado). Config
+  `xemonitor-gui.conf` na pasta central, `auto_start` no login.
 
 ## Instalação
 
@@ -93,12 +100,17 @@ Alternativa local (desenvolvedor): `zig build gui` + `zig-out/bin/xemonitor-gui`
 
 ### Windows
 
-1. Clone o repositório e compile: `zig build` (gera `zig-out\bin\xemonitor.exe`).
-2. Prepare o WSL2 (Arch) com o bridge: ver `scripts/install_bridge_service.sh` e `setup_usb.bat`.
-3. Rode `run_bridge.bat` (USB attach via usbipd → serviço systemd do bridge → `xemonitor.exe --tcp` + Bloco de Notas).
+1. Compile: `zig build` (gera `zig-out\bin\xemonitor.exe` e `xemonitor-gui.exe`).
+2. Prepare o WSL2 (**Alpine**/OpenRC padrão; Arch/systemd fallback) com o bridge:
+   `setup_usb.bat` (attach CH340 via usbipd) + `scripts/install_bridge_service.sh`
+   (detecta init e instala o serviço).
+3. Rode `run_bridge.bat` (USB attach → serviço do bridge → `xemonitor-gui.exe`),
+   ou apenas `xemonitor-gui.exe` com a config `server_mode=wsl` + `auto_start=true`.
 
-> Instalador Windows (wizard next-next-finish) está no roadmap — instruções de build e
-> setup do wizard em [docs/windows-installer.md](docs/windows-installer.md).
+**Instalador Windows (wizard next-next-finish)**: `packaging/windows/xemonitor.iss`
+(Inno Setup) + `packaging/windows/install_windows.bat` instalam tudo (WSL2, usbipd,
+Alpine, bridge, binários em `%ProgramFiles%\XeMonitor`, config do GUI, tarefas
+agendadas) e iniciam o fluxo. Guia em [docs/windows-installer.md](docs/windows-installer.md).
 
 ## Compilar
 
@@ -109,7 +121,7 @@ zig build test         # testes do app
 zig build test-bridge  # testes do bridge (Linux-only)
 ```
 
-Requisito: **Zig 0.16.0** (Windows: 0.15.2 em `C:\zig-x86_64-windows-0.15.2\`; WSL/CachyOS: 0.16.0). Dependência Zig: `serial` (ZigEmbeddedGroup), pinada via `build.zig.zon`.
+Requisito: **Zig 0.16.0** (Windows: `C:\zig\zig-x86_64-windows-0.16.0\`; WSL/CachyOS: 0.16.0). Dependência Zig: `serial` (ZigEmbeddedGroup), pinada via `build.zig.zon`.
 
 ## Uso
 
@@ -165,9 +177,10 @@ Baud rate configurável via `XEMONITOR_BAUD` (padrão: `115200`), serial `8N1` s
 ```
 src/main.zig          → app principal (serial/TCP/stdin + injeção de teclado)
 src/bridge.zig        → bridge Linux/WSL2 (TCP raw :9000 e HTTP :8080)
-src/gui.zig           → GUI Linux (SDL3 + dvui): janela + config + controle bridge/cliente
-src/tray.zig          → bandeja Linux (SNI via D-Bus + menu dbusmenu)
+src/gui.zig           → GUI (SDL3 + dvui): janela + config + controle bridge/cliente (Windows: app principal)
+src/tray.zig          → bandeja (SNI/D-Bus no Linux; nativa Win32 no Windows)
 src/icon.zig          → ícone procedural da bandeja (barcode 24x24)
+src/i18n.zig          → i18n (us/pt_br) + t(comptime key) + formatInto
 src/uinput.zig        → injetor Linux nativo /dev/uinput
 src/paths.zig         → resolução do diretório central de config (Linux ~/.config, Windows %APPDATA%)
 src/bridge.py         → bridge Python legado (stdlib-only)
@@ -182,16 +195,19 @@ diagnose_xemonitor.sh → diagnóstico/auto-recuperação do host Linux (--check
 run_xemonitor.sh      → (Linux) bridge systemd + GUI com bandeja (auto_start)
 stop_xemonitor.sh     → (Linux) mata GUI + cliente + para o bridge
 status_xemonitor.sh   → (Linux) status serviço/GUI/cliente/serial + pasta de config
-run_bridge.bat        → USB attach + bridge (systemd) + xemonitor + Bloco de Notas
+run_bridge.bat        → USB attach + bridge (Alpine/Arch) + xemonitor + Bloco de Notas
 stop_bridge.bat       → encerra bridge + xemonitor
 status_bridge.bat     → status do serviço bridge + xemonitor
 setup_usb.bat         → attach CH340 ao WSL via usbipd (auto-eleva)
-setup_wsl.sh          → setup udev + módulos usbip + wsl.conf
-scripts/install_bridge_service.sh → instala unit systemd do bridge
-scripts/install_autostart.bat     → tarefas agendadas (USB/bridge/xemonitor)
+setup_wsl.sh          → setup udev + módulos usbip + wsl.conf (detecta Alpine/Arch)
+scripts/bridge_ctl.bat → controla o serviço do bridge no WSL (Alpine/OpenRC + Arch/systemd)
+scripts/install_bridge_service.sh → instala o serviço do bridge (detecta init: systemd/OpenRC)
+scripts/install_autostart.bat     → tarefas agendadas (USB/bridge/GUI)
 scripts/uninstall_autostart.bat   → remove tarefas agendadas
 systemd/xemonitor-bridge.service  → unit systemd do bridge (sistema)
 systemd/xemonitor-gui.service     → unit systemd de usuário opcional do GUI
+openrc/xemonitor-bridge            → init script OpenRC do bridge (padrão no Alpine WSL)
+packaging/windows/                → instalador Windows: xemonitor.iss + install_windows.bat + start_*.cmd
 docs/windows-installer.md → guia do instalador Windows (wizard next-next-finish)
 TODO.md / AGENTS.md / CHANGELOG.md → plano / contexto / changelog
 ```
@@ -230,7 +246,8 @@ Grupo novo (`uucp`) vale após novo login — use `sg uucp -c '...'` na sessão 
 
 ## Roadmap
 
-- [x] Teclado virtual no Windows (`SendInput`, validado) e Linux (`ydotool`/`xdotool`, validado).
-- [x] Instalador Linux + workflow de Release (v0.1.0).
-- [ ] Instalador Windows (wizard next-next-finish).
-- [ ] Migrar bridge do WSL de Arch/systemd → Alpine/OpenRC (binário musl estático já roda em Alpine).
+- [x] Teclado virtual no Windows (`SendInput`, validado com **scan físico real** no v0.5.0) e Linux (`uinput`/`ydotool`/`xdotool`, validado).
+- [x] Instalador Linux + workflow de Release (v0.1.0; tags v0.1.0–v0.5.0 publicadas).
+- [x] Instalador Windows (wizard next-next-finish) — `packaging/windows/` (Inno Setup + install_windows.bat); validado de ponta a ponta no v0.5.1 (UAC real, GUI em janela, feedback do scanner USB-Serial).
+- [x] Migrar bridge do WSL de Arch/systemd → **Alpine/OpenRC** (v0.5.0; binário musl estático roda em ambos).
+- [x] Scan físico no Windows revalidado (v0.5.0, 2026-08-15) — causa raiz: bridge não acionava DTR/RTS; corrigido (`src/bridge.zig`).

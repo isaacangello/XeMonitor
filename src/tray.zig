@@ -60,6 +60,11 @@ pub const Tray = struct {
 
     pub fn stop(self: *Tray) void {
         self.stop_flag.store(true, .seq_cst);
+        if (comptime os == .windows) {
+            // A thread fica bloqueada em GetMessageW; posta WM_NULL na janela
+            // message-only para acordá-la e permitir o join (senão deadlock).
+            windows.wakeThread();
+        }
         if (self.thread) |t| {
             t.join();
             self.thread = null;
@@ -96,6 +101,7 @@ const windows = if (os == .windows) struct {
 
     const WM_USER: u32 = 0x0400;
     const WM_TRAYCALLBACK = WM_USER + 1;
+    const WM_NULL: u32 = 0x0000;
     const WM_COMMAND: u32 = 0x0111;
     const WM_DESTROY: u32 = 0x0002;
     const WM_LBUTTONUP: u32 = 0x0202;
@@ -115,6 +121,7 @@ const windows = if (os == .windows) struct {
     const ID_SHOW: u32 = 1;
     const ID_QUIT: u32 = 2;
 
+    const RES_ICON_ID: usize = 1;
     const IDI_APPLICATION: usize = 32512;
     const HWND_MESSAGE: ?*anyopaque = @ptrFromInt(@as(usize, 0xfffffffffffffffd));
 
@@ -124,7 +131,7 @@ const windows = if (os == .windows) struct {
         wParam: usize,
         lParam: isize,
         time: u32,
-        pt: windows_api.POINT,
+        pt: POINT,
     };
 
     const BITMAPINFOHEADER = extern struct {
@@ -193,9 +200,7 @@ const windows = if (os == .windows) struct {
     extern "gdi32" fn CreateDIBSection(hdc: ?*anyopaque, pbmi: *const BITMAPINFO, usage: u32, ppvBits: ?*?*anyopaque, hSection: ?*anyopaque, offset: u32) callconv(.winapi) ?*anyopaque;
     extern "gdi32" fn DeleteObject(ho: ?*anyopaque) callconv(.winapi) i32;
     extern "user32" fn CreateIconIndirect(piconinfo: *const ICONINFO) callconv(.winapi) ?*anyopaque;
-    extern "user32" fn DestroyIcon(hIcon: ?*anyopaque) callconv(.winapi) i32;
-    extern "user32" fn RegisterClassExW(lpWndClass: *const WNDCLASSEXW) callconv(.winapi) u16;
-    extern "user32" fn CreateWindowExW(
+    extern "user32" fn RegisterClassExW(lpWndClass: *const WNDCLASSEXW) callconv(.winapi) u16;    extern "user32" fn CreateWindowExW(
         dwExStyle: u32,
         lpClassName: [*:0]const u16,
         lpWindowName: [*:0]const u16,
@@ -210,6 +215,7 @@ const windows = if (os == .windows) struct {
         lpParam: ?*anyopaque,
     ) callconv(.winapi) ?*anyopaque;
     extern "user32" fn DefWindowProcW(hWnd: ?*anyopaque, msg: u32, wParam: usize, lParam: isize) callconv(.winapi) isize;
+    extern "user32" fn PostMessageW(hWnd: ?*anyopaque, msg: u32, wParam: usize, lParam: isize) callconv(.winapi) i32;
     extern "user32" fn GetMessageW(lpMsg: *MSG, hWnd: ?*anyopaque, wMsgFilterMin: u32, wMsgFilterMax: u32) callconv(.winapi) c_int;
     extern "user32" fn TranslateMessage(lpMsg: *const MSG) callconv(.winapi) i32;
     extern "user32" fn DispatchMessageW(lpMsg: *const MSG) callconv(.winapi) isize;
@@ -226,29 +232,13 @@ const windows = if (os == .windows) struct {
     var g_hwnd: ?*anyopaque = null;
     var g_class_name: [64]u16 = undefined;
     var g_nid: NOTIFYICONDATAW = undefined;
-    var g_custom_icon: bool = false;
 
     fn createBarcodeIcon() ?*anyopaque {
-        const icon = @import("icon.zig");
-        const size: i32 = 24;
-        var bgra: [24 * 24 * 4]u8 = undefined;
-        icon.barcodeBgra(&bgra, 24, icon.white);
-        var bi = std.mem.zeroes(BITMAPINFO);
-        bi.bmiHeader.biSize = @sizeOf(BITMAPINFOHEADER);
-        bi.bmiHeader.biWidth = size;
-        bi.bmiHeader.biHeight = -size;
-        bi.bmiHeader.biPlanes = 1;
-        bi.bmiHeader.biBitCount = 32;
-        bi.bmiHeader.biCompression = 0;
-        var bits: ?*anyopaque = null;
-        const hbm = CreateDIBSection(null, &bi, 0, &bits, null, 0) orelse return null;
-        if (bits) |raw| {
-            @memcpy(@as([*]u8, @ptrCast(raw))[0..bgra.len], &bgra);
-        }
-        const info = ICONINFO{ .fIcon = 1, .xHotspot = 0, .yHotspot = 0, .hbmMask = null, .hbmColor = hbm };
-        const hicon = CreateIconIndirect(&info);
-        _ = DeleteObject(hbm);
-        return hicon;
+        // Ícone do recurso do próprio exe (assets/xemonitor.rc -> xemonitor.ico,
+        // derivado do PNG em build time). LoadIconW do recurso é o padrão e
+        // dispensa CreateIconIndirect/CreateDIBSection (que falhava).
+        const h_instance = GetModuleHandleW(null) orelse return null;
+        return LoadIconW(h_instance, RES_ICON_ID);
     }
 
     fn wstr(buf: []u16, s: []const u8) [*:0]const u16 {
@@ -348,19 +338,19 @@ const windows = if (os == .windows) struct {
         g_nid.uID = 1;
         g_nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         g_nid.uCallbackMessage = WM_TRAYCALLBACK;
-        g_nid.hIcon = if (createBarcodeIcon()) |hi| blk: {
-            g_custom_icon = true;
-            break :blk hi;
-        } else LoadIconW(null, IDI_APPLICATION);
+        g_nid.hIcon = if (createBarcodeIcon()) |hi| hi else LoadIconW(null, IDI_APPLICATION);
         const tip = wstr(&classBuf, "XeMonitor");
-        @memcpy(g_nid.szTip[0..tip.len], tip[0..tip.len]);
+        @memcpy(g_nid.szTip[0..@min(std.mem.len(tip), g_nid.szTip.len)], tip[0..@min(std.mem.len(tip), g_nid.szTip.len)]);
         _ = Shell_NotifyIconW(NIM_ADD, &g_nid);
     }
 
     fn deinit() void {
         if (g_nid.hWnd != null) _ = Shell_NotifyIconW(NIM_DELETE, &g_nid);
-        if (g_custom_icon and g_nid.hIcon != null) _ = DestroyIcon(g_nid.hIcon);
         g_nid.hWnd = null;
+    }
+
+    fn wakeThread() void {
+        if (g_hwnd) |hwnd| _ = PostMessageW(hwnd, WM_NULL, 0, 0);
     }
 } else struct {};
 const linux = if (os == .linux) struct {
@@ -421,7 +411,12 @@ const linux = if (os == .linux) struct {
     }
 
     fn redrawIcon() void {
-        icon.barcodeArgb(&g_icon_argb, @intCast(ICON_PIX_SIZE), if (g_icon_dark) icon.white else icon.black);
+        const png = @import("png.zig");
+        if (png.rgba().len != 0) {
+            png.resize(png.rgba(), png.width, png.height, &g_icon_argb, @intCast(ICON_PIX_SIZE), @intCast(ICON_PIX_SIZE), .argb);
+        } else {
+            icon.barcodeArgb(&g_icon_argb, @intCast(ICON_PIX_SIZE), if (g_icon_dark) icon.white else icon.black);
+        }
     }
 
     // Consulta o esquema de cores via xdg-desktop-portal.

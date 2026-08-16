@@ -132,6 +132,10 @@ pub fn build(b: *std.Build) void {
     });
     if (target.result.os.tag == .windows) {
         configureWindowsLibserialport(b, exe);
+        exe.root_module.addWin32ResourceFile(.{
+            .file = b.path("assets/xemonitor.rc"),
+            .include_paths = &.{b.path("assets")},
+        });
     } else {
         exe.root_module.link_libc = true;
     }
@@ -165,15 +169,30 @@ pub fn build(b: *std.Build) void {
     const test_bridge_step = b.step("test-bridge", "Run bridge tests (Linux only)");
     test_bridge_step.dependOn(&run_bridge_tests.step);
 
+    // PNG decoder tests (platform-independent, runs on any host)
+    const png_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/png.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .filters = if (b.args) |a| a else &.{},
+    });
+    png_tests.root_module.addAnonymousImport("barcode_png", .{ .root_source_file = b.path("src/Barcode Scanner.png") });
+    const run_png_tests = b.addRunArtifact(png_tests);
+    const test_png_step = b.step("test-png", "Run PNG decoder tests");
+    test_png_step.dependOn(&run_png_tests.step);
+
     // ---- GUI executable (DVUI + SDL3, cross-platform) ----
     const dvui_dep = b.dependency("dvui", .{
         .target = target,
         .optimize = optimize,
         .backend = .sdl3,
-        // keep the first build light: no freetype/tree-sitter/file dialogs
+        // keep the first build light: no freetype/tree-sitter
         .freetype = false,
         .@"tree-sitter" = false,
-        .@"tiny-file-dialogs" = false,
+        // native file dialogs (comdlg32 on Windows, zenity/etc. on Linux)
+        .@"tiny-file-dialogs" = true,
     });
     const gui = b.addExecutable(.{
         .name = "xemonitor-gui",
@@ -184,9 +203,19 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    gui.root_module.addAnonymousImport("barcode_png", .{ .root_source_file = b.path("src/Barcode Scanner.png") });
     gui.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     gui.root_module.addImport("sdl3-backend", dvui_dep.module("sdl3"));
-    if (target.result.os.tag == .linux) {
+    if (target.result.os.tag == .windows) {
+        gui.root_module.addWin32ResourceFile(.{
+            .file = b.path("assets/xemonitor.rc"),
+            .include_paths = &.{b.path("assets")},
+        });
+        // xemonitor-gui é o app principal no Windows: janela + bandeja, sem
+        // terminal de console (subsystem GUI). O xemonitor.exe cliente continua
+        // console (CLI). A GUI spawna o cliente com create_no_window=true.
+        gui.subsystem = .windows;
+    } else if (target.result.os.tag == .linux) {
         // StatusNotifierItem tray via libdbus (session bus); pkg-config supplies include paths.
         gui.root_module.linkSystemLibrary("dbus-1", .{});
         // Debian/Ubuntu multiarch: libdbus-1.so fica fora do path padrão do
@@ -251,6 +280,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_png_tests.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

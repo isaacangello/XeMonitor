@@ -1,114 +1,113 @@
 # Instalador Windows — instruções (wizard next-next-finish)
 
-> Status: **planejado** (roadmap item 3). Este documento registra o que fazer
-> quando estivermos no Windows para criar o instalador com wizard
-> **Next → Next → Finish** (estilo dos instaladores clássicos do Windows).
+> Status: **implementado no v0.5.1** (`packaging/windows/`). O instalador real
+> (rodar o `XeMonitor-0.5.1-setup.exe` num PC com o fluxo limpo) é validado de
+> ponta a ponta nesta versão: UAC real, progresso visível do WSL, GUI em janela
+> (sem terminal) e feedback do scanner USB-Serial.
 
 ## Objetivo
 
-Empacotar `xemonitor.exe` (+ bridge e scripts de apoio) num instalador que o
-usuário roda e conclui em três cliques, sem console/PowerShell manual. Ao
-terminar, deve deixar o fluxo pronto para escanear:
+Empacotar `xemonitor-gui.exe` (+ `xemonitor.exe`, bridge e scripts de apoio)
+num instalador que o usuário roda e conclui em três cliques, sem
+console/PowerShell manual. Ao terminar, deve deixar o fluxo pronto para
+escanear:
 
-1. `xemonitor.exe` instalado (ex.: `C:\Program Files\XeMonitor\`).
-2. Tarefas agendadas de **boot/logon** (espelho de `scripts/install_autostart.bat`):
-   - `init Docker WSL` (boot + logon) — inicia o Docker no WSL;
-   - `attach CH340` (logon) — `usbipd attach` do scanner ao WSL;
-   - `start bridge` (logon) — `systemctl start xemonitor-bridge` no WSL;
-   - `start xemonitor` (logon) — roda `xemonitor.exe --tcp 127.0.0.1:9000`
-     como processo invisível.
-3. Ícone de atalho no menu Iniciar (`XeMonitor`) e/ou bandeja (opt-in `--tray`).
+1. `xemonitor-gui.exe` (app principal, janela + bandeja — **subsystem GUI**, sem
+   terminal) e `xemonitor.exe` instalados em `C:\Program Files\XeMonitor\`.
+2. WSL2 + usbipd + distro **Alpine** (padrão; Arch fallback) com o serviço do
+   bridge instalado e iniciado (`/usr/local/bin/xemonitor-bridge`).
+3. Config do GUI em `%APPDATA%\xemonitor\xemonitor-gui.conf`
+   (`server_mode=wsl`, `auto_start=true`, `tray_enabled=true`, `lang=pt_br`).
+4. Tarefas agendadas de logon (espelho de `scripts/install_autostart.bat`):
+   - `XeMonitor-USB-Attach` (logon, `/rl HIGHEST`) — `usbipd attach` do CH340;
+   - `XeMonitor-Bridge` (logon, +30s) — `bridge_ctl.bat enable`;
+   - `XeMonitor-App` (logon, +45s, `/rl LIMITED`) — `start_xemonitor.cmd`
+     (roda o `xemonitor-gui.exe`; não elevado p/ UIPI).
+5. Atalho no menu Iniciar (`XeMonitor`) e desktop (opcional).
+6. **Scanner USB-Serial conectado** — o instalador roda o `setup_usb.bat`
+   (bind/attach do CH340 via usbipd) e avisa claramente se o Honeywell 1900
+   USB-SERIAL não for detectado (`/dev/ttyUSB0` no WSL).
 
-## Como foi feito antes (padrão do projeto)
+## Arquivos do pacote (`packaging/windows/`)
 
-O projeto **não usa** um instalador MSI/WiX. O padrão até aqui é **script**:
+- **`xemonitor.iss`** (Inno Setup): `AppVersion=0.5.1`,
+  `MyAppExeName=xemonitor-gui.exe`. `[Files]` instala os binários Windows
+  (`xemonitor-gui.exe`, `xemonitor.exe`), o bridge Linux (`zig-out/bin/bridge`),
+  `setup_wsl.sh`, `openrc/xemonitor-bridge`, `systemd/xemonitor-bridge.service`,
+  os scripts (`bridge_ctl.bat`, `install_bridge_service.sh`,
+  `install_autostart.bat`, `uninstall_autostart.bat`) e os helpers
+  (`install_windows.bat`, `start_bridge.cmd`, `start_xemonitor.cmd`).
+  `[Run]`: roda `install_windows.bat` (**elevado + visível**, com `/silent` para
+  suprimir os `pause`) e depois inicia o GUI com `runascurrentuser nowait`
+  (integridade **Média**, evita bloqueio UIPI do SendInput).
+  `[UninstallRun]`: `uninstall_autostart.bat`.
+- **`install_windows.bat`**: instalador completo (auto-eleva via UAC):
+  1. WSL2 (`wsl --status` / `--update`; instala com `--no-distribution` se faltar);
+  2. usbipd-win (via `winget install usbipd`, fallback `C:\Program Files\usbipd-win\`);
+  3. distro WSL (detecta Alpine → Arch; instala Alpine com
+     `wsl --install -d Alpine --no-launch` se faltar);
+  4. bridge: `setup_wsl.sh` + copia o binário para `/usr/local/bin/xemonitor-bridge`
+     + copia o **init script** `openrc/xemonitor-bridge` (e a unit systemd) para o
+     WSL + instala o serviço (OpenRC no Alpine / systemd no Arch);
+  5. binários Windows para `%ProgramFiles%\XeMonitor`;
+  5b. `xemonitor-gui.conf` em `%APPDATA%\xemonitor`;
+  6. tarefas agendadas (`install_autostart.bat` ou fallback schtasks);
+  7. inicia o bridge + roda `setup_usb.bat` (attach CH340) + verifica e avisa
+     se o scanner USB-Serial está conectado. O GUI **não** é lançado daqui
+     (evita elevação) — o `[Run]` do Inno faz isso depois, sem elevar.
+- **`start_xemonitor.cmd` / `start_bridge.cmd`**: wrappers das tarefas
+  agendadas; redirecionam stdout/stderr para `%APPDATA%\xemonitor\*.task.log`
+  (a saída da sessão de tarefa corrompe bytes UTF-8).
 
-- **Linux**: `install.sh` (curl | bash) — instala binários, udev, grupos,
-  serviço, autostart (v0.2.0+).
-- **Windows**: `scripts/install_autostart.bat` — cria as tarefas agendadas
-  com `schtasks` (sem UI de wizard). Os `.bat` (`run_bridge.bat`,
-  `stop_bridge.bat`, `status_bridge.bat`) fazem o resto do dia a dia.
+## Compilação (no Windows)
 
-Portanto há **duas opções** para o "instalador Windows":
-
-### Opção A — avançar o script .bat (recomendada, menor esforço)
-
-Converter `install_autostart.bat` num `install_windows.bat` que:
-- copia `xemonitor.exe` para `%ProgramFiles%\XeMonitor\`;
-- cria as tarefas agendadas (boot + logon);
-- cria atalho no Menu Iniciar (via PowerShell, `WScript.Shell`).
-
-O "wizard" nesse caso é a própria janela do Windows (contas de usuário /
-UAC + confirmações do `schtasks`). Próximo passo real de wizard é a Opção B.
-
-### Opção B — instalador com wizard Next→Next→Finish
-
-Ferramentas adequadas (custo x resultado):
-
-| Ferramenta | Esforço | Observação |
-|---|---|---|
-| **Inno Setup** (`.iss`) | Baixo | Compila com `ISCC.exe`; cria installer.exe com wizard next-next-finish; suporte a `[Run]`/`[Tasks]`; é o mais usado p/ este estilo |
-| **NSIS** (`.nsi`) | Baixo | Wizard padrão; mais verboso que Inno; mesmo papel |
-| **WiX / MSI** | Alto | Silencioso/empacotado p/ enterprise; exige `.wxs` + WiX toolset; sem wizard visual rico por padrão |
-| **Tarefas agendadas** (atual) | Zero | Não é wizard — é o "como foi feito" |
-
-> Recomendação: **Inno Setup** — instalador .exe único, wizard
-> next-next-finish, permissões automáticas, e permite rodar
-> `install_autostart.bat`/PowerShell ao final via `[Run]`.
-
-## Esqueleto Inno Setup (p/ quando formos ao Windows)
-
-`packaging/windows/xemonitor.iss` (a criar):
-
-```iss
-[Setup]
-AppName=XeMonitor
-AppVersion=0.2.0
-DefaultDirName={autopf}\XeMonitor
-DefaultGroupName=XeMonitor
-OutputDir=dist
-OutputBaseFilename=XeMonitor-0.2.0-setup
-PrivilegesRequired=admin        ; cria tarefas agendadas + Program Files
-
-[Files]
-Source: "zig-out\bin\xemonitor.exe"; DestDir: "{app}"
-Source: "scripts\install_autostart.bat"; DestDir: "{app}\scripts"
-
-[Icons]
-Name: "{group}\XeMonitor"; Filename: "{app}\xemonitor.exe"
-
-[Run]
-Filename: "{app}\scripts\install_autostart.bat"; Flags: runhidden
-; opcional: Filename: "{app}\xemonitor.exe"; Parameters: "--tray"; Flags: nowait
-```
-
-Compilação (no Windows):
 ```cmd
-rem precisa do Inno Setup instalado (iscc.exe no PATH)
+rem 1. precisa do Zig 0.16 e do Inno Setup instalado
+zig build                 rem (Debug; xemonitor.exe + bridge Linux)
+zig build gui -Doptimize=ReleaseSafe   rem precisa do patch sdl3 (ver abaixo)
+powershell -ExecutionPolicy Bypass -File scripts\patch_sdl3_release.ps1
+zig build gui -Doptimize=ReleaseSafe
 iscc packaging\windows\xemonitor.iss
 ```
 
-### Passos para implementar (checklist — ao chegar no Windows)
+> **Bug translate-c (Zig 0.16, issue #327):** `zig build gui -Doptimize=ReleaseSafe`
+> no Windows falha com "unused local constant" no `sdl3-c.zig` gerado
+> (`extern_local_wcscat_s`/`extern_local_wcscpy_s`). Rodar
+> `scripts/patch_sdl3_release.ps1` (idempotente) aplica o workaround no cache
+> antes do build ReleaseSafe do GUI.
 
-1. Criar `packaging/windows/xemonitor.iss` com o esqueleto acima (ajustar versão).
-2. Confirmar que `xemonitor.exe` compila no Windows 0.15.2: `C:\zig-x86_64-windows-0.15.2\zig.exe build`.
-3. Testar o instalador numa VM/usuário limpo: rodar o wizard
-   **Next → Next → Finish** e escanear um código no Bloco de Notas.
-4. Subir o `.iss` para o repo; rodar `install_autostart.bat` **já coberto** pelo
-   `[Run]` do instalador.
-5. (Opcional) incluir o `setup_usb.bat` como atalho no grupo XeMonitor.
+Gera `dist\XeMonitor-0.5.1-setup.exe`.
+
+## Checklist para validar o instalador real
+
+1. Compilar o `.iss` (Inno Setup) num PC com o Inno instalado.
+2. Rodar o wizard **Next → Next → Finish** (pede admin para Program Files/tarefas).
+3. Observar o **console visível** com o progresso `[1/7]..[7c]` (WSL/usbipd/Alpine
+   + attach USB + verificação do scanner).
+4. Confirmar: binários em `%ProgramFiles%\XeMonitor`, config em `%APPDATA%\xemonitor`,
+   tarefas criadas, bridge ativo no WSL, GUI aberto **em janela** (sem terminal)
+   e cliente conectado.
+5. Confirmar o feedback do scanner: `[OK] Scanner USB-Serial detectado` ou o
+   aviso `[IMPORTANTE] Scanner USB-Serial NAO detectado` com instruções.
+6. Escanear um código no Bloco de Notas (com o fluxo serial funcionando).
 
 ## Lembretes importantes
 
-- **UIPI**: xemonitor e o editor-alvo devem rodar **não elevados**. O instalador
-  pode pedir admin (para criar tarefas/instalar em Program Files), mas o
-  **`[Run]` que lança o xemonitor não deve rodar elevado** — ou use a tarefa
-  agendada com `/rl LIMITED` (padrão atual) para evitar o bloqueio do SendInput.
-- **Tarefas agendadas**: manter o padrão `/rl LIMITED` + wrappers `.cmd` que
-  redirecionam stdout/stderr para arquivo (a saída do terminal corrompe bytes
-  UTF-8).
-- **Pasta de config**: em v0.2.0+ o log/pid ficam em `%APPDATA%\xemonitor`
-  (ver `src/paths.zig`); o instalador não precisa criá-la — o app cria na
-  primeira execução.
-- Bridge continua no WSL (Arch/Alpine); o instalador Windows **não** instala o
-  bridge — apenas as tarefas que iniciam o serviço no WSL.
+- **UIPI**: xemonitor/gui e o editor-alvo devem rodar **não elevados**. O
+  instalador pede admin, mas a tarefa `XeMonitor-App` usa `/rl LIMITED`, o
+  `install_windows.bat` **não** lança o GUI (evita processo elevado) e o
+  `[Run]` do GUI usa `runascurrentuser` — não elevar a injeção.
+- **Pasta de config**: o app usa `%APPDATA%\xemonitor` (ver `src/paths.zig`); o
+  instalador grava o `xemonitor-gui.conf` e os wrappers criam a pasta se faltar.
+- Bridge continua no WSL (Alpine/OpenRC padrão; Arch/systemd fallback); o
+  instalador **não** roda o bridge no Windows — apenas o serviço no WSL.
+- O driver CH340 no Windows permanece quebrado (erro 31); por isso todo o
+  fluxo usa o bridge TCP no WSL (não há acesso serial direto no Windows).
+- **DTR/RTS**: o Honeywell 1900 em modo serial só transmite com DTR+RTS ativos.
+  O bridge aciona ambos (`ioctl(TIOCMBIS)` em `src/bridge.zig`); se o scan não
+  chegar, verifique se o binário instalado em `/usr/local/bin/xemonitor-bridge`
+  é o atualizado (recompilar com `zig build` e reinstalar).
+- **Scanner USB-Serial**: o Honeywell 1900 deve estar conectado via adaptador
+  CH340 (USB-SERIAL) para o fluxo funcionar. O GUI (modo `wsl`) avisa na barra
+  de status quando o `/dev/ttyUSB0` não está presente e o `bridge_ctl.bat dev`
+  testa a presença do dispositivo.

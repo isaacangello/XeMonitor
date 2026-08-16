@@ -7,6 +7,7 @@ const c = @cImport({
     @cInclude("fcntl.h");
     @cInclude("unistd.h");
     @cInclude("termios.h");
+    @cInclude("sys/ioctl.h");
     @cInclude("sys/socket.h");
     @cInclude("netinet/in.h");
     @cInclude("arpa/inet.h");
@@ -43,6 +44,8 @@ const TCP_PORT: u16 = 9000;
 const BAUD: u32 = 115200;
 const SERIAL = "/dev/ttyUSB0";
 const CODE_MAX = 256;
+const TIOCM_DTR: c_int = 0x002;
+const TIOCM_RTS: c_int = 0x004;
 
 var verbose: bool = false;
 
@@ -194,6 +197,11 @@ fn configureSerial(fd: c_int) void {
 
     _ = c.tcsetattr(fd, c.TCSAFLUSH, &t);
     _ = c.tcflush(fd, c.TCIOFLUSH);
+
+    const dtr_rts: c_int = TIOCM_DTR | TIOCM_RTS;
+    if (c.ioctl(fd, c.TIOCMBIS, &dtr_rts) != 0) {
+        std.debug.print("[bridge] warning: failed to assert DTR+RTS\n", .{});
+    }
 }
 
 fn openSerial() c_int {

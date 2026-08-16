@@ -2,161 +2,90 @@
 
 Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 
-## Quit-dialog + i18n (sessão atual)
+---
 
-### Código
-- [x] **Fix deadlock no `ManagedProc.stop()`** — `waiter` segura o mutex durante o `wait`; `stop()` mata por pid (SIGTERM→SIGKILL 500ms) antes do `mutex.lock`; validado com reprodutor e em execução real (clique em "Encerrar" encerrou GUI+bridge+cliente limpos)
-- [x] **Diálogo de confirmação de encerramento** — "Encerrar"/bandeja "Sair" pedem confirmação; cancelar mantém o GUI; X do diálogo = cancelar
-- [x] **Fix panic `@memcpy` alias em `refreshStatus`** (status gravado direto em `status_buf`)
-- [x] **`src/i18n.zig`** (novo): tabelas `us`/`pt_br`, `Locale`, `t(comptime key)` (compilação falha se chave faltar), `formatInto` runtime (`{s}`/`{d}`)
-- [x] **Config `lang`** (padrão `us`; load/save/free) + seletor de idioma no painel (dropdown dvui)
-- [x] Strings do GUI e da bandeja migradas para `i18n.t(...)`
-- [x] `zig build`, `zig build gui`, `zig build test` verdes; `zig run` teste do formatter (us/pt_br OK); validação cancel (hook) e yes (exit limpo); bandeja pt_br via D-Bus (GetLayout: "Mostrar janela"/"Sair")
+## Pendentes para a próxima sessão no Windows
 
-### Serviço / ambiente
-- [x] Serviço systemd real `xemonitor-bridge` religado (estava parado desde 14:16)
+### 1. (Concluído) Validação no Windows (scan físico + UIPI)
+- [x] Scan físico → **VALIDADO (2026-08-15)**: o scanner bipava/luzia mas a captura crua em `/dev/ttyUSB0` não recebia bytes. Causa raiz: **bridge não acionava DTR/RTS** — o Honeywell 1900 em modo serial só transmite com DTR/RTS ativas. Corrigido em `src/bridge.zig` (`ioctl(TIOCMBIS)` com `TIOCM_DTR|TIOCM_RTS` após `tcsetattr`); bridge reinstalado em `/usr/local/bin/xemonitor-bridge` no Alpine. Scan físico validado de ponta a ponta: `7898405966679`/`7898567704461` → bridge → TCP 9000 → cliente → `SendInput` → Bloco de Notas.
+  - CH340 attachado ao WSL (COM6, busid 4-1, usbipd Shared); `/dev/ttyUSB0` no Alpine (mknod manual, udevd via `/sbin/udevd --daemon`)
+  - Fake-scan validado de ponta a ponta (bridge Alpine → xemonitor-gui → cliente → SendInput): `TEST10` + `enter sent`
+- [x] UIPI: xemonitor e editor em integridade **Média** (não elevado) — validado em sessões anteriores
 
-## Header + Histórico Scroll + Tema Runtime (sessão atual)
-> Layout do header, histórico com scroll/tempo real e detecção de tema.
+### 2. (Concluído) Migração WSL: Arch/systemd → Alpine/OpenRC
+- ✅ Alpine 3.24.1 instalado via rootfs (`wsl --import Alpine C:\wsl\Alpine`)
+- ✅ `setup_wsl.sh` adaptado (udevadm com timeout + softlevel OpenRC; wsl.conf sem systemd)
+- ✅ `openrc/xemonitor-bridge` (sem `need net`); `install_bridge_service.sh` cria softlevel
+- ✅ `bridge_ctl.bat` detecta Alpine/OpenRC primeiro, Arch/systemd fallback
+- ✅ Fake-scan ponta a ponta no Alpine validado; porta 9000 OK
 
-### Código
-- [x] **Header compacto** — seletor de idioma + botão "Encerrar" movidos para o topo ao lado de "XeMonitor" (dentro da mesma linha horizontal); `lang_row`/`quit_row` do rodapé removidos
-- [x] **Histórico com scroll + tempo real** — `scrollArea` vertical `.auto` (barra só quando conteúdo > viewport); *stick-to-bottom*: novo scan cola no fim quando `offsetFromMax <= 0` e usuário não scrollou (`user_scroll.y >= 0`); `HistoryState` persistido via `dvui.dataGetPtrDefault`
-- [x] **Tema claro/escuro runtime** — `theme_scheme = backend.preferredColorScheme()` no init + loop principal reaplica via `win.themeSet()` quando muda (usa `SDL_EVENT_SYSTEM_THEME_CHANGED` do portal)
-- [x] **Tamanho da janela 880x660** — geometria persistida antiga (720x520) removida (`~/.local/share/dvui/XeMonitor/window_geometry.zon`); janela agora respeita `.size` do `initWindow`
-- [x] **Limpeza instrumentação** — removidos `dbgLog`, `HistoryState.dbg_n`, logs de label rects, `history len`, `win pos`, `theme init/change`
+### 3. (Concluído) GUI Windows + instalador
+- ✅ `zig build gui` compila para Windows (fixes portabilidade em gui.zig/tray.zig)
+- ✅ GUI como app principal: modo `wsl` usa `bridge_ctl.bat`; cliente resolve `xemonitor.exe` ao lado do exe
+- ✅ `xemonitor.iss` / `install_windows.bat` / `start_xemonitor.cmd` / `install_autostart.bat` → GUI
+- ✅ Validado no Windows: janela + auto_start + cliente + injeção SendInput (TEST10)
 
-### Verificação
-- [x] `zig build` / `zig build gui` / `zig build test` — verdes (exit 0)
-- [x] Tema init = `dark` (sistema escuro via portal `color-scheme=1`)
-- [x] Switch runtime confirmado: `busctl emit SettingChanged color-scheme=2` → `theme change: light` no log
-- [x] Histórico: labels 28px empilhados (rects y=0/28/56); `virtual_size=5601` vs `viewport=496` → scrollbar ativa
-- [x] Janela: 880x660 (log dvui: `Size.Natural{ 880 660 }`)
-- [x] Screenshot `/tmp/xem_final.png` capturado (você abre para conferir header/tema/histórico)
-- [x] Config real restaurada (`systemd-system` + binários `/usr/local/bin/...`)
+### 4. (Em andamento) v0.5.1: docs + tag/release
+- [x] Atualizar docs (AGENTS.md, README, README.pt-BR, CHANGELOG, .checkpoint.md, TODO.md, docs/windows-installer.md)
+- [x] `build.zig.zon` → 0.5.1
+- [x] Fix bridge DTR/RTS + scan físico validado de ponta a ponta (bloqueio de release removido)
+- [x] v0.5.1 fixes: GUI subsystem (sem terminal), feedback USB-Serial (instalador + GUI + `bridge_ctl dev`), init script OpenRC no instalador, `wsl --install -d Alpine`, `setup_usb.bat` no instalador, `[Run]` elevado+visível `/silent`, `[Run]` GUI `runascurrentuser`, `scripts/patch_sdl3_release.ps1`
+- [x] **Fix `. foi inesperado` no cmd** (2026-08-16): remover parênteses dentro de strings em blocos `if (...)` multi-linha (`install_windows.bat`, `setup_usb.bat`, `run_bridge.bat`, `bridge_ctl.bat`) + remover em-dash UTF-8 (byte 0xE2 0x80 0x94) de `.bat` (cmd parseia em codepage OEM)
+- [x] Instalador E2E validado (EXIT=0): passos 1-7c OK; Alpine baixado do site/importado/default; bridge → `/usr/local/bin/xemonitor-bridge`; init OpenRC registrado (`rc-update add ... default`); serviço **started** escutando 9000; TCP 9000 conectado; tarefas agendadas criadas; `setup_usb.bat /silent` EXIT=0
+- [x] setup.exe recompilado com os `.bat` corrigidos: `dist\XeMonitor-0.5.1-setup.exe` SHA256=`4CAB3BE841CCA37DC730AD5626D65457F986A0986399978410E3531D53A6FAC6` (ISCC em `C:\Users\isaac\AppData\Local\Programs\Inno Setup 6\ISCC.exe`)
+- [ ] Investigar log anômalo da instalação real do usuário (3 passadas intercaladas no `xemonitor-install.log`; 1ª com `%DISTRO%` vazio/rc=-1 → console mostrou "falhou ao copiar o bridge", mas bridge foi copiado na 2ª passada). Teste isolado do `:log` com parênteses passou limpo → causa provável: processos cmd concorrentes no mesmo .bat/log (não reproduzido). Blindar `install_windows.bat`: single-instance lockfile, validar `%DISTRO%` no passo 4, log com PID
+- [x] Fix `zig build test` quebrado: PNG estava em `src\Barcode Scanner.png` mas o `build.zig` referenciou `b.path("Barcode Scanner.png")` (raiz) → `file_hash FileNotFound`. Corrigido nas 2 linhas; build test volta a passar
+- [x] `dist/` adicionado ao `.gitignore` (setup.exe é artefato de build; release via `gh release upload`)
+- [ ] Decidir migração do `xemonitor-gui.conf` antigo (passo 5b preserva `server_mode=subprocess auto_start=false`; instalador só grava `wsl+auto_start=true` quando o conf não existe)
+- [ ] Revalidar `setup.exe` com UAC real (duplo clique) após investigação
+- [ ] Commit + tag `v0.5.1` + `gh release create` + upload do `setup.exe` (após validação do usuário com UAC real)
 
-## Organização v0.2.0 (sessão atual)
-> Alvo: pasta central de config/log, GUI com layout/ícone melhores, autostart e
-> instruções do instalador Windows.
+---
 
-### Código
-- [x] **Layout do GUI**: lista de scans/logs em nova linha abaixo de "Histórico (últimos scans)" (box horizontal do cabeçalho fechado com bloco `{}`; botões Copiar/Exportar não roubam mais a coluna esquerda)
-- [x] **`src/paths.zig`** (novo): `openConfigDir` + `joinPath` — resolve/cria Linux `~/.config/xemonitor` (ou `$XDG_CONFIG_HOME`), Windows `%APPDATA%\xemonitor` (fallback `%LOCALAPPDATA%`), override `XEMONITOR_CONFIG_DIR`, fallback cwd
-- [x] **`src/main.zig`**: `xemonitor.log`, `xemonitor.pid`, `xemonitor_tray.pid` → pasta central (via `paths`)
-- [x] **`src/gui.zig`**: `xemonitor-gui.conf`, `xemonitor-gui.pid`, `log_path` padrão → pasta central; `setWindowIcon()` (SDL3, barras do barcode; X11 via `SDL_SetWindowIcon`, Wayland via `.desktop`)
+## Histórico — já concluído (tags pushed)
 
-### Scripts / instalação
-- [x] `run_xemonitor.sh`: `CFG_DIR="${XEMONITOR_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/xemonitor}"`; cria pasta; config + log no `$CFG_DIR`
-- [x] `status_xemonitor.sh`: reporta pasta central + arquivos (tamanhos) + tail do log
-- [x] `status_bridge.bat`: reporta `%APPDATA%\xemonitor` + tail do log
-- [x] `install.sh` → **1.1.0**: instala `xemonitor-gui`, `.desktop` (share/applications), autostart XDG, `~/.config/xemonitor` + config padrão, unit systemd de usuário opcional; resumo atualizado
-- [x] `.github/workflows/release.yml`: `zig build gui -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe` (apt `libsdl3-dev libdbus-1-dev`) + `xemonitor-gui` no tarball
+## Histórico — já concluído (tags pushed)
 
-### Autostart (Q2 — "os dois")
-- [x] Autostart XDG no login: `~/.config/autostart/xemonitor.desktop` (via install.sh)
-- [x] Unit systemd de usuário opcional: `systemd/xemonitor-gui.service` → `/etc/systemd/user/` (não habilitada por padrão p/ não duplicar com autostart)
+### v0.4.0 (2026-08-15) — i18n + quit dialog + header compacto + histórico scroll + tema runtime
+- Fix deadlock `ManagedProc.stop()` (SIGTERM→SIGKILL por pid antes do mutex)
+- Diálogo de confirmação de encerramento (botão "Encerrar" + bandeja "Sair")
+- `src/i18n.zig`: tabelas `us`/`pt_br`, `t(comptime key)`, `formatInto({s}/{d})`
+- Config `lang` + seletor dropdown no painel
+- Header compacto: idioma + "Encerrar" no topo ao lado de "XeMonitor"
+- Histórico: `scrollArea` vertical auto + stick-to-bottom
+- Tema claro/escuro runtime via `SDL_EVENT_SYSTEM_THEME_CHANGED`
+- Janela 880x660 (geometria persistida antiga removida)
 
-### Instalador Windows (instruções)
-- [x] `docs/windows-installer.md`: wizard next-next-finish (Inno Setup recomendado) + como foi feito antes (scripts .bat/`install_autostart.bat` + tarefas agendadas `/rl LIMITED`)
+### v0.3.1 (2026-08-14) — Desinstalador no sistema
+- `uninstall.sh` empacotado no release como `xemonitor-uninstall` em `/usr/local/bin`
+- `install.sh` 1.2.2 instala o desinstalador; auto-descobre prefixo; `--purge` remove config+logs
 
-### Docs
-- [x] `CHANGELOG.md` (seção Unreleased v0.2.0), `README.md`, `README.pt-BR.md`, `AGENTS.md`, este `TODO.md`
-- [x] `assets/xemonitor.desktop` (Entry Type=Application, `Icon=xemonitor`)
+### v0.3.0 (2026-08-14) — Log rotativo + uninstaller + Ubuntu/Debian compat
+- Log datado `xemonitor-YYYY-MM-DD.log` (reabre na virada do dia)
+- `uninstall.sh` na raiz (mantém config; `--purge` remove tudo)
+- CI em `ubuntu-22.04` (glibc 2.35); `install.sh` instala `libdbus-1-3 libsystemd0`, grupo `input`, udev uinput
 
-### Verificação
-- [x] Rebuild `zig build` + `zig build gui` + `zig build test` — verdes (exit 0) após todos os edits
-- [x] `XEMONITOR_CONFIG_DIR=/tmp/cfgtest`: cliente (`--stdin`) criou `/tmp/cfgtest/xemonitor/xemonitor.log` + `xemonitor.pid`, com `[scan]`/`[info] injected`/`enter sent`
-- [x] GUI com config pré-escrita no cfg dir: abriu/renderizou (dvui 720x520), ícone OK, watchdog rodou (`computeBridgeStatus`), pid criado/removido no cleanup; saveConfig na saída limpa
-- [x] `status_xemonitor.sh` com a estrutura nova (reporta `~/.config/xemonitor`, serviço, GUI, cliente, serial, grupos); `bash -n` nos `.sh` OK
-- [x] `run_xemonitor.sh`: `bash -n` OK (execução interativa fica p/ o usuário — inicia bridge root + GUI em foreground)
-- [x] Observação: no smoke test o `stopBridge` do deinit do GUI (modo `systemd-system`, `pkexec systemctl stop`) parou o bridge — comportamento pré-existente (fora do escopo v0.2.0)
+### v0.2.0 (2026-08-14) — Pasta central + GUI melhor + autostart
+- `src/paths.zig`: `~/.config/xemonitor` / `%APPDATA%\xemonitor` (override `XEMONITOR_CONFIG_DIR`)
+- `src/uinput.zig`: injetor nativo `/dev/uinput` (padrão Linux; fallback ydotool/xdotool)
+- GUI: layout histórico, ícone janela (`setWindowIcon`), ícone bandeja barcode branco
+- Autostart XDG + unit systemd usuário opcional
+- `install.sh` 1.1.0 instala `xemonitor-gui`, `.desktop`, autostart
+- `release.yml` builda `xemonitor-gui` + inclui no tarball
 
+### v0.1.0 — Base: bridge multi-conexão, systemd WSL, autostart Windows, release workflow
+- Bridge TCP multi-conexão + testes (13 passing)
+- `systemd/xemonitor-bridge.service` + `install_bridge_service.sh` (WSL)
+- `run_bridge.bat` / `stop_bridge.bat` / `status_bridge.bat`
+- `scripts/install_autostart.bat` (3 tarefas agendadas `/rl LIMITED`) — instaladas
+- `.github/workflows/release.yml`: tags `v*` → musl ReleaseSafe + tarball
+- `install.sh`: curl|bash → release + udev + grupos + serviço (systemd/OpenRC)
 
-## Infra / Git (concluído)
-- [x] Tarefa agendada `init Docker WSL` ajustada (Boot + Logon) para iniciar WSL/Arch e garantir Docker via systemd
-- [x] Docker ativo no WSL (v29.4.3, `systemctl enable docker`)
-- [x] Excluir `ORIENTACAO.md` (obsoleto, conteúdo fundido no README/AGENTS)
-- [x] Instalar `gh` (GitHub CLI 2.97.0) e autenticar como `isaacangello`
-- [x] Chave SSH `ed25519` gerada com `isaacangello@inf.ufpel.edu.br` e adicionada ao GitHub
-- [x] Remote `origin` trocado para SSH `git@github.com:isaacangello/XeMonitor.git`
-- [x] `user.name`/`user.email` configurados no repositório
+---
 
-## Documentação
-- [x] Criar `TODO.md` (este arquivo)
-- [x] Criar `AGENTS.md`
-- [x] Atualizar `.checkpoint.md` com o estado real
-- [x] Atualizar `CHANGELOG.md`
-
-## Bridge
-- [x] Corrigir modo TCP do `src/bridge.zig` para aceitar múltiplas conexões (thread leitora serial → `SharedState`, loop `accept`, thread escritora por cliente)
-- [x] Adicionar testes (`readSince`/`currentSeq`) e corrigir teste pré-existente
-- [x] `zig build test-bridge` compilando + 13 testes passando (executados no WSL)
-
-## Automação do bridge (systemd no WSL)
-- [x] Criar `systemd/xemonitor-bridge.service` (ExecStartPre aguarda `/dev/ttyUSB0`, Restart=always)
-- [x] Criar `scripts/install_bridge_service.sh` (copia binário para `/usr/local/bin/xemonitor-bridge`, instala/habilita, `--reinstall`)
-- [x] Serviço instalado e habilitado no WSL (`systemctl is-enabled` = enabled)
-- [x] Validado: TCP multi-conexão + reconexão após desconexão (2 clients simultâneos)
-- [x] Atualizar `run_bridge.bat` para usar `wsl systemctl start xemonitor-bridge`
-- [x] Atualizar `stop_bridge.bat` (stop serviço + taskkill)
-- [x] Criar `status_bridge.bat`
-- [x] Robustecer `setup_usb.bat` com fallback do caminho do usbipd
-
-## Autostart no Windows
-- [x] Criar `scripts/install_autostart.bat` (3 tarefas: USB attach, bridge, xemonitor) — **instaladas**
-- [x] Criar `scripts/uninstall_autostart.bat`
-
-## Instalador Linux + Release (versionamento)
-- [x] Criar `.github/workflows/release.yml` (tags `v*` → build musl estático ReleaseSafe x86_64-linux + tarball `xemonitor-linux-x86_64.tar.gz` + publicação da Release)
-- [x] Criar `install.sh` (baixa tarball da última Release; `sudo` para udev CH340 + grupos `uucp,dialout` + serviço; detecta systemd/OpenRC; `--prefix`/`--no-service`; override `XEMONITOR_VERSION`/`XEMONITOR_BASE_URL` p/ teste)
-- [x] Testar `install.sh` no container Alpine (root): download, instalação em `/usr/local/bin`, regra udev, VERSION, binários executáveis
-- [x] Builds ReleaseSafe musl validados localmente (xemonitor 4.4MB, bridge 4.3MB)
-- [x] Versionamento definido: **v0.<recurso>.<correção>** (recurso → +meio, correção → +último) — primeira tag: **v0.1.0**
-- [ ] Commit + tag `v0.1.0` + push + `gh release create` (aguardando OK do usuário)
-- [ ] `git push -u origin main`
-
-## Validação no Windows (quando voltar ao Windows)
-1. [ ] `taskkill /F /IM xemonitor.exe` (matar antes de recompilar)
-2. [ ] Rebuild: `C:\zig-x86_64-windows-0.15.2\zig.exe build`
-3. [ ] `run_bridge.bat` (usbipd attach CH340 → systemd bridge → `xemonitor.exe --tcp 127.0.0.1:9000`)
-4. [ ] Scan físico → log deve mostrar `[scan] '<código completo>'` (não `'TSSA00'`), `[info] injected '...'` e `[info] enter sent`
-5. [ ] UIPI: xemonitor e editor em integridade Média (não elevado)
-
-## Validação no CachyOS (concluída)
-- [x] Fix TCP no `src/main.zig`: `rbuf [0]u8` no arm `.tcp` (o `netRead` anexa o buffer interno do reader como 2º iovec; reader novo por byte descartava o byte extra → `'TSSA00'`)
-- [x] End-to-end com scanner real: bridge → TCP 9000 → `xemonitor --tcp` (ydotool) → Kate
-- [x] Scan físico `7898121840147` → `[scan] '7898121840147'` completo, `[info] injected '...'`, `[info] enter sent`; texto chegou no editor
-- [x] **Bridge sob systemd (Linux)**: unit de usuário `~/.config/systemd/user/xemonitor-bridge.service` (`ExecStart=/usr/bin/sg uucp -c '...bridge'`; wrapper dispensa re-login) → `systemctl --user enable --now` → `active`, serial aberto, porta 9000, scan OK
-- [x] Nota: para abrir `/dev/ttyUSB0` sem re-login, usar `sg uucp -c '...'` (grupo `uucp` adicionado mas sessão antiga não o herdou)
-
-## GUI Linux (dvui) — correções de sessão
-- [x] **Toggle da bandeja não funcionava**: o loop principal bloqueava para sempre em `SDL_WaitEvent(null)` quando ocioso (`win.waitTime(end_micros)` retorna `maxInt(u32)` com `end_micros == null` → `waitEventTimeout(maxInt)` → `SDL_WaitEvent(null)`). Fix: `waitEventTimeout(@min(wait_event_micros, 250_000))` (poll de 250ms) em `gui.zig`. Validado via D-Bus `Activate` → `hidden=true/false=true` (3 alternâncias).
-- [x] **Texto sobreposto no campo host:porta**: `dvui.textEntry()` deixa o widget como pai corrente (só restaurado no `deinit()`) → o `labelNoFmt("  :  ")` e o `te_port` eram criados **dentro do textLayout interno do `te_host`** (confirmado: parent=`TextEntryWidget.zig:213`, rect `x=-6,y=-6`). Fix: `te.deinit()` imediato (padrão dos exemplos do dvui — textEntry deve ser último filho), restaura o pai para a row. Agora `tPort rect={x=215,y=0,w=82,h=38}` ao lado do host (`{x=0,w=182}`), sem sobreposição, sem erro de `parentReset`.
-- [x] `zig build gui` + `zig build test` passando (exit 0)
-
-## GUI Linux — ícone da bandeja + export (sessão atual)
-- [x] **Ícone barcode branco** em `src/icon.zig` (24x24 procedural; barras eram pretas → invisíveis no painel KDE; agora 255,255,255)
-- [x] **`IconName` "system-run" → "xemonitor"** em `src/tray.zig` (GetAll + Get) — KDE resolvia do tema e ignorava o pixmap
-- [x] **Botões de export** no `renderHistoryPanel`: **"Copiar"** (wl-copy via `.stdin=.pipe`; escopo = últimos 200 em memória, código por linha, sem prefixo) e **"Exportar arquivo"** (zenity `--file-selection --save`)
-- [x] Fix double-close no `copyToClipboard` (`child.stdin = null` antes do `wait` — panic BADF no Zig 0.16)
-- [x] Validado: clipboard (wl-paste), arquivo texto, SNI registrado, barcode branco visível após expandir itens ocultos do KDE; código temporário de teste removido
-- [x] `zig build gui` + `zig build test` passando (exit 0)
-
-## Migração WSL: Arch/systemd → Alpine/OpenRC (quando voltar ao Windows)
-> Bridge é **musl estático** (provado via `readelf`: sem dynamic interpreter) → roda em Alpine sem recompilar. O trabalho é de **init + scripts**, não de código.
-- [ ] Criar `openrc/xemonitor-bridge` (init script OpenRC; dispensa `ExecStartPre` — bridge já re-tenta serial a cada 2s)
-- [ ] Adaptar `scripts/install_bridge_service.sh` → OpenRC (`rc-update add default` + `rc-service start`)
-- [ ] `iniciar.bat` / `run_bridge.bat` / `stop_bridge.bat` / `status_bridge.bat`: `systemctl` → `rc-service` (`is-active`→`status`)
-- [ ] `scripts/install_autostart.bat`: `wsl -d Arch` → distro Alpine + `rc-service start`
-- [ ] `setup_usb.bat`: `usbipd attach -w Arch` → nome da distro Alpine
-- [ ] `setup_wsl.sh`: remover `systemd=true` do wsl.conf; `apk add eudev kmod openrc`; `rc-update add udev` (regra udev MODE=0666 continua, dispensa grupo `uucp`)
-- [ ] Instalar distro Alpine no WSL + testar OpenRC real + revalidar scan (item 3 da Validação no Windows)
-
-## Roadmap (teclado nas duas plataformas)
-1. [x] **Windows**: `xemonitor.exe` injeta via `SendInput` (validado; faltar revalidar após fix TCP — ver "Validação no Windows")
-2. [x] **Linux**: `xemonitor` injeta via ydotool (Wayland) — validado no CachyOS (systemd) e WSL pode rodar local
-3. [ ] **Instalador Windows** (next-next-finish) — só quando for ao Windows
-4. [x] **Instalador Linux**: `curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash` (baixa Release, udev, grupos, serviço systemd/OpenRC) — pendente o commit+tag v0.1.0
-
-## Pendências históricas (bridge)
-- [x] Testar leitura real escaneando um código de barras (Honeywell 1900) — **feito no CachyOS** (código `7898121840147`)
+## Roadmap (visão geral)
+1. ✅ **Windows**: `xemonitor`/`xemonitor-gui` injeta via `SendInput` (validado; fake-scan ponta a ponta; **scan físico validado** em 2026-08-15 após fix DTR/RTS no bridge)
+2. ✅ **Linux**: `xemonitor` injeta via uinput/ydotool (validado no CachyOS)
+3. ✅ **Migração WSL Arch→Alpine/OpenRC** (item 2 acima — validado)
+4. ✅ **GUI Windows + instalador** (item 3 acima — GUI principal; instalador real validado na v0.5.1)
+5. ⏳ **v0.5.1 release** (item 4 acima)

@@ -2,6 +2,118 @@
 
 ## [Unreleased]
 
+## [0.5.1] — 2026-08-15
+
+### Changed
+- **`xemonitor-gui.exe` agora é app de janela (subsystem GUI)** no Windows —
+  sem terminal de console. O cliente `xemonitor.exe` continua console (CLI) e
+  é spawnado com `create_no_window` (SDK `std.process.run`).
+- **Instalador Windows reescrito para feedback real** — o `[Run]` do Inno roda
+  `install_windows.bat` **elevado e visível** (`/silent` suprime os `pause`),
+  mostrando o progresso `[1/7]..[7c]`; o GUI é lançado em seguida pelo
+  `[Run]` com `runascurrentuser` (integridade **Média** — evita o bloqueio
+  UIPI do `SendInput` ao injetar em apps não-elevados).
+- **Feedback do scanner USB-Serial** — o instalador verifica `/dev/ttyUSB0`
+  no WSL e avisa claramente quando o Honeywell 1900 USB-SERIAL (CH340) não
+  está conectado; a GUI (modo `wsl`) também avisa na barra de status e o
+  `bridge_ctl.bat` ganhou a ação `dev` para testar a presença do dispositivo.
+
+### Fixed
+- **Bridge no Alpine recém-instalado** — o `install_windows.bat` agora copia
+  o init script `openrc/xemonitor-bridge` (e a unit systemd) para o WSL antes
+  de `rc-update add`/`systemctl enable`; antes só rodava o `rc-update`, que
+  falhava silenciosamente (`|| true`) numa distro nova.
+- **`wsl --install` do Alpine** — corrigido para `wsl --install -d Alpine
+  --no-launch` (a sintaxe `--name` usada antes não é válida).
+- **Setup USB na instalação** — `install_windows.bat` agora executa
+  `setup_usb.bat` ao final (attach do CH340 ao WSL), em vez de só criar a
+  tarefa agendada.
+- **translate-c no ReleaseSafe (Windows)** — `scripts/patch_sdl3_release.ps1`
+  aplica o workaround do bug do translate-c (issue #327) no `sdl3-c.zig`
+  gerado, permitindo `zig build gui -Doptimize=ReleaseSafe`.
+
+## [0.5.0] — 2026-08-15
+
+### Added
+- **Migração WSL: Arch/systemd → Alpine/OpenRC** — distro WSL padrão passa a ser
+  **Alpine** (menor footprint; fallback mantido para Arch). Novo init script
+  `openrc/xemonitor-bridge` (sem `need net`; softlevel para WSL/container) e
+  `scripts/install_bridge_service.sh` agora **detecta o init** (systemd vs
+  OpenRC) e instala o serviço correto.
+- **`scripts/bridge_ctl.bat`** — controla o serviço do bridge no WSL de forma
+  transparente (detecta Alpine/OpenRC → `rc-service`, Arch/systemd →
+  `systemctl`). Ações: `status | start | stop | restart | enable`; override de
+  distro via `XEMONITOR_WSL_DISTRO`. Usado pelos scripts .bat, pelas tarefas
+  agendadas e pelo GUI (modo `wsl`).
+- **GUI como app principal no Windows** — o `xemonitor-gui.exe` passa a ser o
+  executável inicial (janela + bandeja). No Windows:
+  - modo `wsl` controla o bridge via `bridge_ctl.bat` (resolve o caminho junto
+    ao exe: `<exe_dir>\scripts\bridge_ctl.bat` → `.\scripts\` → `.\`);
+  - `startClient` resolve o `xemonitor.exe` como binário **irmão** do GUI
+    (instalação/pasta de release);
+  - a config `xemonitor-gui.conf` é gravada pelo instalador em
+    `%APPDATA%\xemonitor` (`server_mode=wsl`, `auto_start=true`,
+    `tray_enabled=true`, `lang=pt_br`).
+- **Instalador Windows (`packaging/`)** — novo pacote em `packaging/windows`:
+  - `xemonitor.iss` (Inno Setup, wizard next-next-finish): instala
+    `xemonitor-gui.exe` + `xemonitor.exe` + bridge + scripts, roda
+    `install_windows.bat` e inicia o GUI. `MyAppExeName=xemonitor-gui.exe`.
+  - `install_windows.bat`: WSL2/usbipd/Alpine → setup_wsl.sh → bridge →
+    binários em `%ProgramFiles%\XeMonitor` → config GUI → tarefas agendadas →
+    início automático (bridge + GUI).
+  - `start_xemonitor.cmd` / `start_bridge.cmd`: wrappers das tarefas agendadas
+    (`/rl LIMITED` p/ UIPI média) com stdout/stderr em arquivo.
+- **Autostart migrado para o GUI** — a tarefa `XeMonitor-App` roda
+  `start_xemonitor.cmd` (que inicia o `xemonitor-gui.exe`, que lê a config e
+  sobe bridge + cliente); `XeMonitor-Bridge` usa `bridge_ctl.bat enable`.
+- **Portabilidade Windows no código** — `src/main.zig`, `src/gui.zig` e
+  `src/tray.zig` compilam no Windows com Zig 0.16 sem `@cImport("time.h")`
+  (datas/timestamps via `std.time.epoch`), `std.os.windows.GetCurrentProcessId`
+  para PID, `child_pid` como `std.atomic.Value(u32)`, constantes Win32
+  `GENERIC_READ/WRITE` etc. localmente, `BOOL.FALSE` explícito, e `szTip`
+  com `std.mem.len`/`@min`.
+- **Release empacota o fluxo novo** — `release.yml` inclui `openrc/`,
+  `systemd/` e `scripts/install_bridge_service.sh` no tarball; `install.sh`
+  usa o init script/unit versionados do release quando presentes (fallback
+  inline mantido) e corrige o caminho do binário pelo prefixo escolhido.
+
+### Changed
+- `run_bridge.bat`, `status_bridge.bat`, `stop_bridge.bat` e `setup_usb.bat`
+  detectam a distro WSL (Alpine primeiro, Arch fallback) e delegam ao
+  `bridge_ctl.bat`.
+- `setup_wsl.sh`: reescrito para `#!/bin/sh`, detecta Alpine/Arch, instala
+  `eudev kmod openrc` no Alpine, usa `timeout` no `udevadm`, cria o softlevel
+  OpenRC, configura `wsl.conf` **sem** `systemd=true` no Alpine, e suporta
+  `doas` (Alpine) além de `sudo`.
+- `README.md`/`README.pt-BR.md`: caminho do Zig no Windows atualizado para
+  `C:\zig\zig-x86_64-windows-0.16.0\`.
+- `build.zig.zon` → `.version = "0.5.0"`.
+
+### Fixed
+- **Portabilidade Windows (Zig 0.16)** — no Windows, `std.posix.pid_t` é um
+  HANDLE (ponteiro); `child_pid` migrou para `u32` e o PID é extraído com
+  `@intFromPtr`. `todayDate`/`timestampStr`/`todayDateStr` trocaram
+  `localtime_r`/`localtime_s` por `std.time.epoch` (portátil).
+- `tray.zig` (Windows): `@memcpy` de `szTip` com `[*:0]const u16` (sem `.len`)
+  → `std.mem.len`; `POINT` duplicado em `MSG` apontava para tipo errado no
+  Windows (usa o `POINT` já existente).
+- **Bridge não acionava DTR/RTS** — o Honeywell 1900 em modo serial só
+  transmite com as linhas DTR/RTS ativas; sem elas o `configureSerial` do
+  bridge (termios raw) lia **zero bytes** (capturas cruas de 22s/45s/40s vazias
+  no WSL). Corrigido em `src/bridge.zig` com `ioctl(TIOCMBIS)` após o
+  `tcsetattr`, acionando `TIOCM_DTR | TIOCM_RTS`. Scan físico revalidado de
+  ponta a ponta: `7898405966679`/`7898567704461` → `/dev/ttyUSB0` → bridge →
+  TCP 9000 → `xemonitor` → `SendInput` → Bloco de Notas (título
+  `* 7898567704461 - Bloco de notas`).
+
+### Notes
+- **Scan físico no Windows revalidado (2026-08-15)**: durante o diagnóstico, o
+  scanner Honeywell 1900 via CH340 bipava/luzia mas a captura crua em
+  `/dev/ttyUSB0` não recebia bytes (nem como HID). Causa raiz: **bridge não
+  acionava DTR/RTS** (ver `Fixed`). Após a correção, o scan físico fluiu de
+  ponta a ponta e injetou no Bloco de Notas (`7898567704461`). O dispositivo
+  `c0f4:08f5` (teclado HID) era o teclado físico, não o scanner.
+
 ## [0.4.0] — 2026-08-15
 
 ### Added

@@ -2,6 +2,9 @@
 title XeMonitor - Remover Autostart
 setlocal
 
+:: ------- /silent: sem pause (usado pelo desinstalador Inno) -------
+set "SILENT=%~1"
+
 :: ------- Auto-elevacao para Admin -------
 net session >nul 2>&1
 if %errorlevel% neq 0 (
@@ -21,4 +24,5 @@ schtasks /Delete /F /TN "XeMonitor-App"
 
 echo.
 echo Tarefas removidas.
-pause
+if /i not "%SILENT%"=="/silent" pause
+exit /b 0
