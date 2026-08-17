@@ -6,7 +6,7 @@
 :: Redireciona stdout/stderr para arquivo (evita corromper bytes na sessao).
 setlocal
 set "APP_DIR=%~dp0..\.."
-set "LOG=%APPDATA%\xemonitor\xemonitor-app-task.log"
-if not exist "%APPDATA%\xemonitor" mkdir "%APPDATA%\xemonitor"
+set "LOG=%APPDATA%\xemonitor\logs\app-task.log"
+if not exist "%APPDATA%\xemonitor\logs" mkdir "%APPDATA%\xemonitor\logs"
 "%APP_DIR%\xemonitor-gui.exe" >> "%LOG%" 2>&1
 exit /b %errorlevel%

@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-17
+
+### Changed
+- **Instalador reestruturado em 4 fases** — elimina fragilidade do `sh -c
+  "complex_cmd"` via `wsl_timeout.ps1`. Scripts `.sh` são gerados via `echo`
+  no `.bat`, copiados para Alpine, e executados de lá. Cada fase é
+  independente e pode ser re-executada.
+  - Fase 1: Dependências Windows + Alpine (WSL2, winget, wget, usbipd, download+import)
+  - Fase 2: Dependências Alpine (openrc, kmod, eudev — verificado ANTES de usar)
+  - Fase 3: Cópia de arquivos + config Alpine (bridge, init script, udev, wsl.conf, modulos)
+  - Fase 4: Configuração final (servico, binarios, tarefas, USB, scanner)
+- **`wsl_timeout.ps1` simplificado** — novas tasks genéricas `copy_file` e
+  `run_script` substituem `setup_wsl`, `copy_bridge`, `copy_openrc`,
+  `copy_systemd`. Download do Alpine removido do PS1 (fica no .bat).
+- **wget com progresso** para download do Alpine (`JernejSimoncic.Wget` via
+  winget; fallback: `Invoke-WebRequest`). winget adicionado como requisito.
+- **Logs consolidados em `%APPDATA%\xemonitor\logs\`** — install.log,
+  wsl.out.txt, wsl.err.txt, setup-usb.log, bridge-task.log, app-task.log.
+- **`setup_usb.bat` simplificado** — remove `apk add kmod` (garantido na Fase 2).
+
+### Removed
+- **`setup_wsl.sh` removido do pacote Inno Setup** — scripts agora são gerados
+  via echo no install_windows.bat. Arquivo mantido no repo para Linux/manual.
+
 ## [0.6.1] — 2026-08-16
 
 ### Fixed

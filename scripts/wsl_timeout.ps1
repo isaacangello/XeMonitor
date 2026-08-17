@@ -5,31 +5,34 @@
 # Uso (via install_windows.bat):
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\wsl_timeout.ps1 `
 #       -Timeout <segundos> -Task <nome_tarefa>
-# Env (opcionais, conforme a tarefa): XEMONITOR_DISTRO, XEMONITOR_SRC
+# Env (opcionais, conforme a tarefa): XEMONITOR_DISTRO, XEMONITOR_SRC, XEMONITOR_DEST
 #
-# Tarefas:
+# Tarefas (v0.7.0 — 4 fases):
 #   status        wsl --status
+#   update        wsl --update
+#   install_wsl   wsl --install --no-distribution
 #   distro_ok     wsl -d <distro> echo ok
-#   install_alpine Baixa o minirootfs do SITE da Alpine e importa no WSL
-#                 (o Alpine NAO esta na lista padrao de wsl --install):
-#                 https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64/
+#   import_alpine wsl --import Alpine (tarball ja baixado; download fica no bat)
 #   set_default   wsl --set-default <distro>
-#   setup_wsl     wsl -d <distro> -u root -- sh -c "<src>"
-#   copy_bridge   wsl -d <distro> -u root -- sh -c "cp '<src>' /usr/local/bin/xemonitor-bridge && chmod 755 ..."
-#   copy_openrc   idem, para /etc/init.d/xemonitor-bridge
-#   copy_systemd  idem, para /etc/systemd/system/xemonitor-bridge.service
+#   copy_file     wsl -d <distro> -u root -- cp "<src>" "<dest>"
+#   run_script    wsl -d <distro> -u root -- sh "<src>"
 #   svc_enable    rc-update add + rc-service start (OpenRC) | systemctl (systemd)
+#   svc_start     rc-service start | systemctl start
 #   tty_check     wsl -d <distro> sh -c "test -c /dev/ttyUSB0"
 #
 # Exit codes: rc do wsl (0 = ok), 200 = TIMEOUT, 201 = erro de processo/tarefa.
-# Stdout/stderr do wsl sao gravados em %TEMP%\xemonitor-wsl.{out,err}.txt.
+# Stdout/stderr do wsl sao gravados em %APPDATA%\xemonitor\logs\wsl.{out,err}.txt.
 
 param([int]$Timeout = 30, [string]$Task = "")
 
 $distro = $env:XEMONITOR_DISTRO
 $src    = $env:XEMONITOR_SRC
-$out    = Join-Path $env:TEMP "xemonitor-wsl.out.txt"
-$err    = Join-Path $env:TEMP "xemonitor-wsl.err.txt"
+$logDir = Join-Path $env:APPDATA "xemonitor\logs"
+if (-not (Test-Path -LiteralPath $logDir)) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+}
+$out = Join-Path $logDir "wsl.out.txt"
+$err = Join-Path $logDir "wsl.err.txt"
 Remove-Item -LiteralPath $out, $err -ErrorAction SilentlyContinue
 
 switch ($Task) {
@@ -37,35 +40,13 @@ switch ($Task) {
     "update"        { $argLine = "--update" }
     "install_wsl"   { $argLine = "--install --no-distribution" }
     "distro_ok"     { $argLine = "-d $distro echo ok" }
-    "install_alpine" {
-        # Alpine NAO esta na lista padrao do wsl --install. Baixa o minirootfs
-        # do site oficial e importa. Resolve a versao mais recente via
-        # latest-releases.yaml (fallback: versao conhecida).
-        $base = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64"
-        $file = "alpine-minirootfs-3.24.1-x86_64.tar.gz"
-        try {
-            $yaml = (Invoke-WebRequest -UseBasicParsing -Uri "$base/latest-releases.yaml" -TimeoutSec 30).Content
-            if ($yaml -match 'flavor: alpine-minirootfs[\s\S]*?file: (alpine-minirootfs-[\d.]+-x86_64\.tar\.gz)') {
-                $file = $Matches[1]
-            }
-        } catch {
-            Write-Output "aviso: nao resolveu latest-releases.yaml; usando $file"
-        }
-        $tgz = Join-Path $env:TEMP "alpine-minirootfs.tar.gz"
-        Remove-Item -LiteralPath $tgz -ErrorAction SilentlyContinue
-        Write-Output "baixando $base/$file"
-        try {
-            Invoke-WebRequest -UseBasicParsing -Uri "$base/$file" -OutFile $tgz -TimeoutSec 240
-        } catch {
-            Write-Output "falha no download: $($_.Exception.Message)"
+    "import_alpine" {
+        $tgz = $env:XEMONITOR_TARBALL
+        if (-not $tgz -or -not (Test-Path -LiteralPath $tgz)) {
+            Write-Output "tarball nao encontrado: $tgz"
             exit 201
         }
-        if (-not (Test-Path -LiteralPath $tgz) -or (Get-Item -LiteralPath $tgz).Length -lt 1000000) {
-            Write-Output "download incompleto"
-            exit 201
-        }
-        # Se ja existe um registro Alpine quebrado (o bat so chega aqui quando
-        # wsl -d Alpine nao responde), remove antes de importar.
+        # Se ja existe um registro Alpine quebrado, remove antes de importar.
         $list = (& wsl -l -q 2>$null | Out-String)
         if ($list -match "Alpine") {
             & wsl --unregister Alpine 2>$null | Out-Null
@@ -73,10 +54,11 @@ switch ($Task) {
         $argLine = "--import Alpine C:\wsl\Alpine `"$tgz`" --version 2"
     }
     "set_default"   { $argLine = "--set-default $distro" }
-    "setup_wsl"     { $argLine = "-d $distro -u root -- sh -c `"$src`"" }
-    "copy_bridge"   { $argLine = "-d $distro -u root -- sh -c `"cp '$src' /usr/local/bin/xemonitor-bridge && chmod 755 /usr/local/bin/xemonitor-bridge`"" }
-    "copy_openrc"   { $argLine = "-d $distro -u root -- sh -c `"cp '$src' /etc/init.d/xemonitor-bridge && chmod 755 /etc/init.d/xemonitor-bridge`"" }
-    "copy_systemd"  { $argLine = "-d $distro -u root -- sh -c `"cp '$src' /etc/systemd/system/xemonitor-bridge.service && chmod 644 /etc/systemd/system/xemonitor-bridge.service`"" }
+    "copy_file"     {
+        $dest = $env:XEMONITOR_DEST
+        $argLine = "-d $distro -u root -- cp `"$src`" `"$dest`""
+    }
+    "run_script"    { $argLine = "-d $distro -u root -- sh `"$src`"" }
     "svc_enable"    {
         $script = @'
 if command -v rc-service >/dev/null 2>&1; then

@@ -135,8 +135,8 @@ for /l %%I in (1,1,15) do (
 if !TTY_OK! equ 1 (
     echo [OK] /dev/ttyUSB0 disponivel!
     wsl -d %DISTRO% ls -la /dev/ttyUSB0
-    if not exist "%APPDATA%\xemonitor" mkdir "%APPDATA%\xemonitor" >nul 2>&1
-    echo %date% %time%  setup_usb: /dev/ttyUSB0 detectado - OK>>"%APPDATA%\xemonitor\setup-usb-task.log"
+    if not exist "%APPDATA%\xemonitor\logs" mkdir "%APPDATA%\xemonitor\logs" >nul 2>&1
+    echo %date% %time%  setup_usb: /dev/ttyUSB0 detectado - OK>>"%APPDATA%\xemonitor\logs\setup-usb.log"
     echo.
     echo ==========================================
     echo  Setup USB concluido!
@@ -163,8 +163,8 @@ echo ==========================================
 echo  Setup USB falhou.
 echo ==========================================
 echo.
-if not exist "%APPDATA%\xemonitor" mkdir "%APPDATA%\xemonitor" >nul 2>&1
-echo %date% %time%  setup_usb: /dev/ttyUSB0 NAO detectado apos attach>>"%APPDATA%\xemonitor\setup-usb-task.log"
+if not exist "%APPDATA%\xemonitor\logs" mkdir "%APPDATA%\xemonitor\logs" >nul 2>&1
+echo %date% %time%  setup_usb: /dev/ttyUSB0 NAO detectado apos attach>>"%APPDATA%\xemonitor\logs\setup-usb.log"
 call :pause_helper
 exit /b 1
 

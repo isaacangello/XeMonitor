@@ -31,7 +31,25 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 
 ---
 
-## Pendentes para a próxima sessão no Windows
+## v0.7.0 — Reformulação do Instalador Windows (2026-08-17)
+
+> Instalador reestruturado em 4 fases claras. Elimina fragilidade do `sh -c`
+> com paths complexos. Scripts gerados via echo no .bat, copiados e executados
+> dentro do Alpine. Dependências verificadas ANTES de serem usadas.
+
+### Feito
+- [x] **wsl_timeout.ps1**: novas tasks `copy_file` e `run_script`; removidas `setup_wsl`, `copy_bridge`, `copy_openrc`, `copy_systemd`; download do Alpine removido (fica no bat)
+- [x] **install_windows.bat**: reescrito em 4 fases (Windows deps → Alpine deps → Alpine config → Final); gera scripts via echo; logs em `%APPDATA%\xemonitor\logs\`
+- [x] **setup_usb.bat**: removido `apk add kmod` (Fase 2 garante); logs em `logs\`
+- [x] **start_bridge.cmd / start_xemonitor.cmd**: logs movidos para `logs\`
+- [x] **xemonitor.iss**: `setup_wsl.sh` removido dos `[Files]`
+- [x] **Bump 0.7.0**: xemonitor.rc, build.zig.zon, xemonitor.iss
+- [x] **CHANGELOG.md**: entrada v0.7.0
+
+### Pendente
+- [ ] Build + test + ISCC + validação do zero (remover Alpine, instalar do 0.7.0)
+- [ ] Commit + tag `v0.7.0` + `gh release`
+- [ ] Atualizar docs/install-flow-v0.7.2.md para v0.7.0
 
 ### 1. (Concluído) Validação no Windows (scan físico + UIPI)
 - [x] Scan físico → **VALIDADO (2026-08-15)**: o scanner bipava/luzia mas a captura crua em `/dev/ttyUSB0` não recebia bytes. Causa raiz: **bridge não acionava DTR/RTS** — o Honeywell 1900 em modo serial só transmite com DTR/RTS ativas. Corrigido em `src/bridge.zig` (`ioctl(TIOCMBIS)` com `TIOCM_DTR|TIOCM_RTS` após `tcsetattr`); bridge reinstalado em `/usr/local/bin/xemonitor-bridge` no Alpine. Scan físico validado de ponta a ponta: `7898405966679`/`7898567704461` → bridge → TCP 9000 → cliente → `SendInput` → Bloco de Notas.

@@ -12,7 +12,7 @@
 ;   iscc packaging\windows\xemonitor.iss
 ; ============================================================
 #define MyAppName "XeMonitor"
-#define MyAppVersion "0.6.1"
+#define MyAppVersion "0.7.0"
 #define MyAppPublisher "XeMonitor"
 #define MyAppExeName "xemonitor-gui.exe"
 
@@ -47,8 +47,7 @@ Source: "..\..\zig-out\bin\xemonitor.exe"; DestDir: "{app}"; Flags: ignoreversio
 Source: "..\..\setup_usb.bat"; DestDir: "{app}"; Flags: ignoreversion
 ; Bridge Linux (musl estatico) — compilado com `zig build bridge -Doptimize=ReleaseSafe`
 Source: "..\..\zig-out\bin\bridge"; DestDir: "{app}"; Flags: ignoreversion
-; Setup WSL (udev/usbip/wsl.conf) + init OpenRC + unit systemd
-Source: "..\..\setup_wsl.sh"; DestDir: "{app}"; Flags: ignoreversion
+; Init OpenRC + unit systemd
 Source: "..\..\openrc\xemonitor-bridge"; DestDir: "{app}\openrc"; Flags: ignoreversion
 Source: "..\..\systemd\xemonitor-bridge.service"; DestDir: "{app}\systemd"; Flags: ignoreversion
 ; Scripts
