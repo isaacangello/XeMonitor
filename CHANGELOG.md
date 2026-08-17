@@ -2,7 +2,79 @@
 
 ## [Unreleased]
 
-## [0.5.1] — 2026-08-15
+## [0.6.1] — 2026-08-16
+
+### Fixed
+- **Tarefa `XeMonitor-App` abria console visível** — o TR da tarefa apontava
+  para `start_xemonitor.cmd` (wrapper `cmd.exe`) que criava uma janela de
+  console. Agora aponta direto para `xemonitor-gui.exe` (subsystem=windows),
+  sem console. Aplicado em `install_autostart.bat` e no fallback do
+  `install_windows.bat`.
+
+## [0.6.0] — 2026-08-16
+
+### Added
+- **Modo Reparo no instalador** — detecta instalação existente e oferece
+  `[R]eparo / [C]ancelar` (ou auto-reparo com `/silent`). Reparo: kill
+  GUI/cliente → recopia binários/scripts → `setup_wsl.sh` → recria tarefas →
+  `setup_usb.bat` (attach + modprobe ch341 + poll 15s) → bridge → GUI via
+  tarefa `XeMonitor-App` `/RL LIMITED`. Backup + reset de `xemonitor-gui.conf`.
+- **Módulo `ch341` automatizado** — `setup_wsl.sh` adiciona `modprobe ch341`
+  ao `[boot] command` do `wsl.conf` e verifica `lsmod` ao final. `setup_usb.bat`
+  garante o módulo carregado *após* o attach com poll de `/dev/ttyUSB0` (15s)
+  e log em `%APPDATA%\xemonitor\setup-usb-task.log`. `bridge_ctl.bat` ganha
+  nova ação `ch341` (modprobe + test). `gui.zig` repairWorker executa
+  `bridge_ctl ch341` antes do poll.
+- **`diagnose_windows.bat --check/--fix`** camada `check_ch341` — verifica se o
+  driver ch341 está carregado e `/dev/ttyUSB0` existe; `--fix` garante o módulo
+  antes do poll.
+- **Lockfile single-instance** no instalador — `xemonitor-install.lock` em
+  `%TEMP%` evita que duas instâncias rodem em paralelo.
+- **PID no log** do instalador — `%INSTALL_PID%` em cada linha de log para
+  correlacionar com processos.
+- **`diagnose_windows.bat` empacotado** no setup.exe (`{app}\diagnose_windows.bat`).
+
+### Fixed
+- **Instalador elevava o GUI** — `[Run]` passo 2 rodava `xemonitor-gui.exe`
+  direto (herdando admin do setup) → GUI congelava (UIPI) e SendInput não
+  injetava. Agora usa `schtasks /Run /TN XeMonitor-App` (tarefa `/RL LIMITED`).
+- **Tarefa `XeMonitor-USB-Attach` pendurada** — `setup_usb.bat` sem `/silent`
+  fazia `pause` no final, mantendo a tarefa "Running" indefinidamente. Agora
+  a tarefa roda `setup_usb.bat /silent`.
+- **Attach falhava silenciosamente no logon** — Alpine pode não estar pronto
+  quando a tarefa `XeMonitor-USB-Attach` roda (~logon). `setup_usb.bat` agora
+  faz poll de `wsl -d Alpine echo ok` (até 30s) antes do `usbipd attach`.
+- **`%DISTRO%` vazio** — se o passo 3 do instalador falhasse, `%DISTRO%` ficava
+  vazio e todos os `wsl -d` subsequentes retornavam rc=-1 silenciosamente.
+  Validação explícita de `%DISTRO%` antes do passo 4; aborta com mensagem.
+
+### Changed
+- **Versão 0.6.0** (`assets/xemonitor.rc`, `packaging/windows/xemonitor.iss`,
+  `build.zig.zon`).
+
+## [0.5.1] — 2026-08-16
+
+### Added
+- **Botão "Reparar" na GUI (modo wsl/Windows)** — em um clique: para o bridge,
+  reattacha o CH340 via tarefa agendada `XeMonitor-USB-Attach` (elevada, sem
+  popup UAC), espera o `/dev/ttyUSB0` voltar (~15s), reinicia o bridge, mata o
+  cliente órfão e relança o `xemonitor.exe` conectando na porta 9000.
+- **`diagnose_windows.bat`** — diagnóstico/auto-recuperação no Windows, espelho
+  do `diagnose_xemonitor.sh`: `--check` (WSL/CH340/bridge/porta/cliente/GUI/
+  tarefas/UIPI/log), `--fix` (reattach USB + restart bridge + relança GUI) e
+  `--test-serial` (leitura live do `/dev/ttyUSB0` por 8s, sem pendurar).
+- **`VERSIONINFO` 0.5.1** nos binários Windows (`xemonitor.exe` e
+  `xemonitor-gui.exe`) — `assets/xemonitor.rc` compartilhado.
+
+### Fixed
+- **Hang do GUI no modo wsl** — o main loop spawnava `wsl.exe` sincronamente a
+  cada 1s (status) e 5s (check do device), congelando a janela. O status agora
+  usa `portIsOpen(127.0.0.1:9000)` (sem spawn) e o check do device roda em
+  thread; ações de bridge (`start/stop/restart`) também foram movidas para
+  thread no Windows.
+- **`. foi inesperado` no cmd** — parênteses dentro de strings em blocos
+  `if (...)` multi-linha quebravam o parse do cmd nos `.bat` (aplicado também
+  no novo `diagnose_windows.bat`).
 
 ### Changed
 - **`xemonitor-gui.exe` agora é app de janela (subsystem GUI)** no Windows —

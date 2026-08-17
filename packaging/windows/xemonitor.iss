@@ -12,7 +12,7 @@
 ;   iscc packaging\windows\xemonitor.iss
 ; ============================================================
 #define MyAppName "XeMonitor"
-#define MyAppVersion "0.5.1"
+#define MyAppVersion "0.6.1"
 #define MyAppPublisher "XeMonitor"
 #define MyAppExeName "xemonitor-gui.exe"
 
@@ -57,6 +57,8 @@ Source: "..\..\scripts\wsl_timeout.ps1"; DestDir: "{app}\scripts"; Flags: ignore
 Source: "..\..\scripts\install_bridge_service.sh"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\..\scripts\install_autostart.bat"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: "..\..\scripts\uninstall_autostart.bat"; DestDir: "{app}\scripts"; Flags: ignoreversion
+; Diagnostico Windows (--check / --fix / --test-serial)
+Source: "..\..\diagnose_windows.bat"; DestDir: "{app}"; Flags: ignoreversion
 ; Instalador/helpers do pacote
 Source: "install_windows.bat"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
 Source: "start_bridge.cmd"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
@@ -73,11 +75,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Run]
 ; Passo 1: instalador completo (WSL2/usbipd/Alpine + bridge + tarefas + USB)
 ; Rodado ELEVADO (herda o admin do setup) e VISIVEL para o usuario ver o
-; progresso [1/7]..[7c]. /silent suprime os pauses do .bat.
+; progresso [1/7]..[7c]. /silent suprime os pauses do .bat. Instalacao ja
+; existente + /silent = auto-reparo (ve o proprio install_windows.bat).
 Filename: "{app}\packaging\windows\install_windows.bat"; WorkingDir: "{app}"; Parameters: "/silent"; StatusMsg: "Configurando WSL, bridge, USB e tarefas..."
-; Passo 2: lanca o GUI principal (janela + bandeja; nao elevado para evitar
-; bloqueio UIPI no SendInput — o setup pediu admin, [Run] herda elevacao)
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait skipifsilent runascurrentuser; Description: "Iniciar XeMonitor agora"
+; Passo 2: lanca o GUI principal (janela + bandeja). NUNCA roda o exe direto
+; daqui: [Run] herda a elevacao do setup e um xemonitor elevado congela (UIPI
+; bloqueia o SendInput). A tarefa XeMonitor-App foi criada pelo passo 1 com
+; /RL LIMITED; basta dispara-la. schtasks /Run nao eleva (o nivel da tarefa
+; governa), entao o GUI roda em integridade Media, correta p/ injecao.
+Filename: "{cmd}"; Parameters: "/c schtasks /Run /TN ""XeMonitor-App"""; Flags: nowait skipifsilent; StatusMsg: "Iniciando XeMonitor..."
 
 [UninstallRun]
 ; Desinstalador visivel e em primeiro plano (nao runhidden/runascurrentuser):

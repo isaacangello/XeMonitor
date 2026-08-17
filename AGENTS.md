@@ -55,7 +55,7 @@ stop_xemonitor.sh     → (Linux) mata GUI + cliente + para o bridge
 status_xemonitor.sh   → (Linux) status serviço/GUI/cliente/serial + pasta de config
 setup_usb.bat         → attach CH340 ao WSL via usbipd (auto-eleva)
 setup_wsl.sh          → setup udev + modulos usbip + wsl.conf (detecta Alpine/Arch)
-scripts/bridge_ctl.bat → controla o serviço do bridge no WSL (Alpine/OpenRC + Arch/systemd): status|start|stop|restart|enable
+scripts/bridge_ctl.bat → controla o serviço do bridge no WSL (Alpine/OpenRC + Arch/systemd): status|start|stop|restart|enable|dev|ch341
 scripts/install_bridge_service.sh → instala o serviço do bridge (detecta init: systemd/OpenRC)
 scripts/install_autostart.bat     → cria tarefas agendadas (USB/bridge/GUI)
 scripts/uninstall_autostart.bat   → remove as tarefas agendadas
@@ -84,7 +84,7 @@ CHANGELOG.md          → changelog
 ## Roadmap (visão geral)
 1. ✅ **xemonitor como teclado nos dois SO** — Windows: `SendInput` (validado com **scan físico real** no v0.5.0 — ver fix DTR/RTS abaixo); Linux: uinput/ydotool (validado no CachyOS).
 2. ✅ **Migrar bridge WSL de Arch/systemd → Alpine/OpenRC** (menos recursos) — feito e validado no v0.5.0 (`openrc/xemonitor-bridge` + `bridge_ctl.bat`); Arch mantido como fallback.
-3. ✅ **Instalador Windows** — `packaging/windows/xemonitor.iss` (Inno Setup, next-next-finish) + `install_windows.bat`; GUI como app principal (rodar o instalador real ainda pendente).
+3. ✅ **Instalador Windows** — `packaging/windows/xemonitor.iss` (Inno Setup, next-next-finish) + `install_windows.bat`; GUI como app principal (validado no v0.5.1). v0.6.0: modo Reparo, ch341 automático, GUI via tarefa LIMITED, diagnose empacotado.
 4. ✅ **Instalador Linux**: `curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash` (feito; tags v0.1.0 a v0.5.0 publicadas).
 
 ## Comandos
@@ -112,6 +112,7 @@ scripts\bridge_ctl.bat status
 scripts\bridge_ctl.bat start
 scripts\bridge_ctl.bat stop
 scripts\bridge_ctl.bat enable
+scripts\bridge_ctl.bat ch341       :: garante driver ch341 + /dev/ttyUSB0
 
 :: Bridge manual no WSL (Arch/systemd, fallback)
 wsl -d Arch -u root systemctl start xemonitor-bridge

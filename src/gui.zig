@@ -341,8 +341,46 @@ fn runCommand(gpa: std.mem.Allocator, io: std.Io, argv: []const []const u8) CmdR
     };
 }
 
+/// Roda um comando e descarta a saída, liberando os buffers. Retorna true se
+/// o processo saiu com status 0. Usado por threads de fundo (dev check e
+/// reparo) para não acumular stdout/stderr alocados.
+fn runCommandOk(app: *App, argv: []const []const u8) bool {
+    const res = std.process.run(app.gpa, app.io, .{
+        .argv = argv,
+        .stdout_limit = std.Io.Limit.limited(16 * 1024),
+        .stderr_limit = std.Io.Limit.limited(16 * 1024),
+    }) catch return false;
+    defer app.gpa.free(res.stdout);
+    defer app.gpa.free(res.stderr);
+    return res.term == .exited and res.term.exited == 0;
+}
+
+// Posta uma mensagem formatada a partir de uma thread de fundo (mutex protege
+// contra a UI thread). Drenada no main loop por drainAsyncMsg().
+fn postAsyncFmt(app: *App, comptime key: []const u8, args: anytype) void {
+    const template = i18n.t(key);
+    var buf: [256]u8 = undefined;
+    const s = i18n.formatInto(&buf, template, args);
+    app.async_msg_mutex.lock(app.io) catch return;
+    defer app.async_msg_mutex.unlock(app.io);
+    app.async_msg_len = @min(s.len, app.async_msg_buf.len);
+    @memcpy(app.async_msg_buf[0..app.async_msg_len], s[0..app.async_msg_len]);
+    app.async_msg_ready = true;
+}
+
+fn drainAsyncMsg(app: *App) void {
+    app.async_msg_mutex.lock(app.io) catch return;
+    defer app.async_msg_mutex.unlock(app.io);
+    if (!app.async_msg_ready) return;
+    app.async_msg_ready = false;
+    app.msg_len = @min(app.async_msg_len, app.msg_buf.len);
+    @memcpy(app.msg_buf[0..app.msg_len], app.async_msg_buf[0..app.msg_len]);
+}
+
 /// Localiza o bridge_ctl.bat (scripts) para controlar o bridge no modo WSL.
 /// Ordem: dirname(exe)/scripts/bridge_ctl.bat (instalado) →
+///        dirname(exe)/../scripts/bridge_ctl.bat (bin/../scripts) →
+///        dirname(exe)/../../scripts/bridge_ctl.bat (zig-out/bin) →
 ///        cwd/scripts/bridge_ctl.bat (dev) →
 ///        cwd/bridge_ctl.bat (fallback). Retorna o comprimento em `out`.
 fn resolveBridgeCtl(gpa: std.mem.Allocator, io: std.Io, out: *[512]u8) usize {
@@ -351,6 +389,14 @@ fn resolveBridgeCtl(gpa: std.mem.Allocator, io: std.Io, out: *[512]u8) usize {
         defer gpa.free(exe);
         if (std.fs.path.dirname(exe)) |exe_dir| {
             const p = std.fmt.bufPrint(out, "{s}{c}scripts{c}bridge_ctl.bat", .{ exe_dir, sep, sep }) catch out[0..0];
+            if (p.len > 0 and fileExists(io, p)) return p.len;
+        }
+        if (std.fs.path.dirname(exe)) |exe_dir| {
+            const p = std.fmt.bufPrint(out, "{s}{c}..{c}scripts{c}bridge_ctl.bat", .{ exe_dir, sep, sep, sep }) catch out[0..0];
+            if (p.len > 0 and fileExists(io, p)) return p.len;
+        }
+        if (std.fs.path.dirname(exe)) |exe_dir| {
+            const p = std.fmt.bufPrint(out, "{s}{c}..{c}..{c}scripts{c}bridge_ctl.bat", .{ exe_dir, sep, sep, sep, sep }) catch out[0..0];
             if (p.len > 0 and fileExists(io, p)) return p.len;
         }
     } else |_| {}
@@ -440,6 +486,19 @@ const App = struct {
     last_scan_time_ns: i128 = 0,
     watchdog_state: u8 = 0,
     usb_warned: bool = false,
+
+    // Operações do bridge_ctl rodam em thread (wsl.exe spawn síncrono
+    // congelava a UI). Resultado volta via async_msg (mutex + buffer).
+    wsl_op_busy: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    dev_check_inflight: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    dev_ok: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    dev_checked: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    repair_busy: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
+    async_msg_mutex: std.Io.Mutex = .init,
+    async_msg_buf: [256]u8 = undefined,
+    async_msg_len: usize = 0,
+    async_msg_ready: bool = false,
 
     bridge_ctl_buf: [512]u8 = undefined,
     bridge_ctl_len: usize = 0,
@@ -562,6 +621,13 @@ fn pushScan(app: *App, code: []const u8) void {
     }
 }
 
+fn devCheckWorker(app: *App) void {
+    defer app.dev_check_inflight.store(false, .seq_cst);
+    const ok = runBridgeCtlOk(app, "dev");
+    app.dev_ok.store(ok, .seq_cst);
+    app.dev_checked.store(true, .seq_cst);
+}
+
 // Watchdog leve (roda a cada ~5s no main loop): detecta o caso "cliente
 // conectado mas sem scans ha muito tempo" e avisa na barra de status. Usa
 // apenas estado em memoria (nao spawna processos).
@@ -571,14 +637,27 @@ fn watchdogTick(app: *App) void {
     // Aviso do scanner USB-Serial (CH340): no modo WSL, verifica se o
     // /dev/ttyUSB0 existe no WSL. Sem scanner conectado, nada funciona —
     // feedback claro para o usuario (fio a fio com o setup_usb.bat).
+    // O check do device roda em thread (wsl.exe spawn síncrono no main
+    // loop congelava a UI); o resultado chega via atomics.
     if (client_running and isMode(app, "wsl") and os == .windows) {
-        const dev_ok = runBridgeCtl(app, "dev").ok;
-        if (!dev_ok and !app.usb_warned) {
-            app.usb_warned = true;
-            app.setMsg("msg_usb_serial_missing", .{});
-        } else if (dev_ok and app.usb_warned) {
-            app.usb_warned = false;
-            app.setMsg("msg_usb_serial_found", .{});
+        if (!app.dev_check_inflight.load(.seq_cst)) {
+            app.dev_check_inflight.store(true, .seq_cst);
+            const t = std.Thread.spawn(.{}, devCheckWorker, .{app}) catch |err| {
+                app.dev_check_inflight.store(false, .seq_cst);
+                postAsyncFmt(app, "msg_client_start_failed", .{@errorName(err)});
+                return;
+            };
+            t.detach();
+        }
+        if (app.dev_checked.load(.seq_cst)) {
+            const dev_ok = app.dev_ok.load(.seq_cst);
+            if (!dev_ok and !app.usb_warned) {
+                app.usb_warned = true;
+                app.setMsg("msg_usb_serial_missing", .{});
+            } else if (dev_ok and app.usb_warned) {
+                app.usb_warned = false;
+                app.setMsg("msg_usb_serial_found", .{});
+            }
         }
     }
 
@@ -738,13 +817,40 @@ fn systemdAction(app: *App, scope: []const u8, action: []const u8) void {
     }
 }
 
+const WslCtx = struct {
+    app: *App,
+    action: []const u8,
+};
+
 fn wslAction(app: *App, action: []const u8) void {
-    const res = runBridgeCtl(app, action);
-    if (res.ok) {
-        app.setMsg("msg_wsl_ok", .{action});
-    } else {
-        app.setMsg("msg_wsl_failed", .{action});
+    if (os != .windows) {
+        const res = runBridgeCtl(app, action);
+        if (res.ok) {
+            app.setMsg("msg_wsl_ok", .{action});
+        } else {
+            app.setMsg("msg_wsl_failed", .{action});
+        }
+        return;
     }
+    if (app.wsl_op_busy.load(.seq_cst)) return;
+    app.wsl_op_busy.store(true, .seq_cst);
+    const t = std.Thread.spawn(.{}, wslActionWorker, .{ WslCtx{ .app = app, .action = action } }) catch {
+        app.wsl_op_busy.store(false, .seq_cst);
+        return;
+    };
+    t.detach();
+}
+
+fn wslActionWorker(ctx: WslCtx) void {
+    defer ctx.app.wsl_op_busy.store(false, .seq_cst);
+    const res = runBridgeCtl(ctx.app, ctx.action);
+    if (res.ok) {
+        postAsyncFmt(ctx.app, "msg_wsl_ok", .{ctx.action});
+    } else {
+        postAsyncFmt(ctx.app, "msg_wsl_failed", .{ctx.action});
+    }
+    ctx.app.gpa.free(res.stdout);
+    ctx.app.gpa.free(res.stderr);
 }
 
 /// Roda o bridge_ctl.bat no Windows (controla o serviço do bridge no WSL,
@@ -753,6 +859,13 @@ fn runBridgeCtl(app: *App, action: []const u8) CmdResult {
     if (app.bridge_ctl_len == 0) return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
     const ctl = app.bridge_ctl_buf[0..app.bridge_ctl_len];
     return runCommand(app.gpa, app.io, &.{ "cmd", "/c", ctl, action });
+}
+
+/// Variante que descarta a saída e libera os buffers (para threads de fundo).
+fn runBridgeCtlOk(app: *App, action: []const u8) bool {
+    if (app.bridge_ctl_len == 0) return false;
+    const ctl = app.bridge_ctl_buf[0..app.bridge_ctl_len];
+    return runCommandOk(app, &.{ "cmd", "/c", ctl, action });
 }
 
 fn startBridge(app: *App) void {
@@ -801,6 +914,73 @@ fn stopBridge(app: *App) void {
     }
 }
 
+fn startRepair(app: *App) void {
+    if (app.repair_busy.load(.seq_cst)) return;
+    if (app.dev_check_inflight.load(.seq_cst)) return;
+    app.repair_busy.store(true, .seq_cst);
+    const t = std.Thread.spawn(.{}, repairWorker, .{app}) catch {
+        app.repair_busy.store(false, .seq_cst);
+        return;
+    };
+    t.detach();
+}
+
+/// Sequência "Reparar" (roda em thread, evita congelar a UI):
+/// 1. para o bridge (libera o /dev/ttyUSB0 no WSL);
+/// 2. reattach do CH340 via tarefa agendada elevada (sem popup UAC);
+/// 3. garante o driver ch341 carregado (bridge_ctl ch341: modprobe + test);
+/// 4. espera o /dev/ttyUSB0 voltar (poll de ~15s);
+/// 5. reinicia o bridge;
+/// 6. mata cliente órfão e relança o cliente.
+fn repairWorker(app: *App) void {
+    defer app.repair_busy.store(false, .seq_cst);
+    postAsyncFmt(app, "msg_repair_start", .{});
+
+    _ = runBridgeCtlOk(app, "stop");
+
+    // Tarefa XeMonitor-USB-Attach roda com RL HIGHEST (autoeleva) e faz o
+    // usbipd attach do CH340 ao WSL. Sem popup UAC para o usuário.
+    _ = runCommandOk(app, &.{ "schtasks", "/Run", "/TN", "XeMonitor-USB-Attach" });
+
+    // O driver ch341 NAO auto-carrega no Alpine; sem ele /dev/ttyUSB0 nao
+    // aparece apos o attach. bridge_ctl ch341 faz modprobe (idempotente) + test.
+    _ = runBridgeCtlOk(app, "ch341");
+
+    // Poll do /dev/ttyUSB0 (bridge_ctl dev) até ~15s.
+    var dev_ok = false;
+    var waited: u8 = 0;
+    while (waited < 15) : (waited += 1) {
+        std.Io.sleep(app.io, std.Io.Duration.fromMilliseconds(1000), .awake) catch break;
+        if (runBridgeCtlOk(app, "dev")) {
+            dev_ok = true;
+            break;
+        }
+    }
+    if (!dev_ok) {
+        postAsyncFmt(app, "msg_repair_usb_failed", .{});
+        return;
+    }
+    postAsyncFmt(app, "msg_repair_usb_ok", .{});
+
+    if (!runBridgeCtlOk(app, "restart")) {
+        postAsyncFmt(app, "msg_repair_bridge_failed", .{});
+        return;
+    }
+    postAsyncFmt(app, "msg_repair_bridge_ok", .{});
+
+    // Mata cliente órfão (Windows usa taskkill /F /IM; instância única é
+    // garantida por CreateMutexA "Global\XeMonitor" no cliente).
+    if (os == .windows) {
+        _ = runCommandOk(app, &.{ "taskkill", "/F", "/IM", "xemonitor.exe" });
+    }
+    if (spawnClient(app)) |addr| {
+        defer app.gpa.free(addr);
+        postAsyncFmt(app, "msg_repair_done", .{addr});
+    } else |err| {
+        postAsyncFmt(app, "msg_client_start_failed", .{@errorName(err)});
+    }
+}
+
 fn computeBridgeStatus(app: *App) []const u8 {
     if (isMode(app, "subprocess")) {
         if (app.bridge.running.load(.seq_cst)) {
@@ -815,7 +995,9 @@ fn computeBridgeStatus(app: *App) []const u8 {
         return if (runSystemdStatus(app, "")) i18n.t("status_systemd_running") else i18n.t("status_systemd_stopped");
     }
     if (isMode(app, "wsl") and os == .windows) {
-        return if (runWslStatus(app)) i18n.t("status_wsl_running") else i18n.t("status_wsl_stopped");
+        // Checa a porta TCP 9000 do bridge (rápido, sem spawn de wsl.exe).
+        // O spawn síncrono a cada 1s era a causa do Application Hang.
+        return if (portIsOpen(app.io, "127.0.0.1", app.cfg.tcp_port)) i18n.t("status_wsl_running") else i18n.t("status_wsl_stopped");
     }
     return i18n.t("status_mode_unknown");
 }
@@ -841,14 +1023,14 @@ fn killStaleClient(app: *App) void {
     std.Io.Dir.cwd().deleteFile(app.io, "xemonitor.pid") catch {};
 }
 
-fn startClient(app: *App) void {
+/// Resolve o caminho do cliente e o endereço TCP, e sobe o processo.
+/// Retorna o endereço alocado (caller libera com gpa.free). Usado pela UI
+/// (setMsg) e pelas threads de reparo (postAsyncFmt).
+fn spawnClient(app: *App) ![]const u8 {
     killStaleClient(app);
     const port: u16 = if (app.bridge_is_ours and app.bridge.running.load(.seq_cst)) app.bridge_port else app.cfg.tcp_port;
-    const addr = std.fmt.allocPrint(app.gpa, "{s}:{d}", .{ app.cfg.tcp_host, port }) catch {
-        app.setMsg("msg_fmt_addr_failed", .{});
-        return;
-    };
-    defer app.gpa.free(addr);
+    const addr = try std.fmt.allocPrint(app.gpa, "{s}:{d}", .{ app.cfg.tcp_host, port });
+    errdefer app.gpa.free(addr);
     var sibling_buf: [512]u8 = undefined;
     const client = if (app.cfg.client_path.len > 0)
         app.cfg.client_path
@@ -858,9 +1040,17 @@ fn startClient(app: *App) void {
         "xemonitor";
     const argv: []const []const u8 = &.{ client, "--tcp", addr };
     app.client.start(app.io, argv) catch |err| {
+        return err;
+    };
+    return addr;
+}
+
+fn startClient(app: *App) void {
+    const addr = spawnClient(app) catch |err| {
         app.setMsg("msg_client_start_failed", .{@errorName(err)});
         return;
     };
+    defer app.gpa.free(addr);
     app.setMsg("msg_client_connecting", .{addr});
 }
 
@@ -900,6 +1090,14 @@ fn renderServerPanel(app: *App) void {
     defer row2.deinit();
     if (dvui.button(@src(), i18n.t("btn_start"), .{}, .{})) startBridge(app);
     if (dvui.button(@src(), i18n.t("btn_stop"), .{}, .{})) stopBridge(app);
+    if (isMode(app, "wsl") and os == .windows) {
+        dvui.labelNoFmt(@src(), "  ", .{}, .{});
+        const repairing = app.repair_busy.load(.seq_cst);
+        const repair_color: ?dvui.Color = if (repairing) .gray else null;
+        if (dvui.button(@src(), i18n.t("btn_repair"), .{}, .{ .color_text = repair_color })) {
+            if (!repairing) startRepair(app);
+        }
+    }
     dvui.labelNoFmt(@src(), i18n.t("label_mode"), .{}, .{});
     dvui.labelNoFmt(@src(), app.cfg.server_mode, .{}, .{});
     dvui.labelNoFmt(@src(), i18n.t("label_port_cfg"), .{}, .{});
@@ -1102,6 +1300,7 @@ fn renderConfirmQuitWindow(app: *App) void {
 
 fn guiFrame(app: *App) bool {
     refreshStatus(app);
+    drainAsyncMsg(app);
     drainClientLines(app);
 
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both, .margin = .{ .x = 8, .y = 8, .w = 8, .h = 8 }, .background = true, .name = "root" });

@@ -4,6 +4,33 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 
 ---
 
+## v0.6.0 — Instalação robusta: módulo ch341 + modo Reparo (2026-08-16)
+
+> Scan físico com a versão instalada **validado** (injeção ponta a ponta). Esta rodada
+> automatiza as intervenções que fizeram o sistema funcionar e blinda o instalador.
+> Release v0.6.0 só após revalidar a instalação (decisão do usuário).
+
+### Intervenções que fizeram funcionar (a automatizar)
+1. `resolveBridgeCtl` fallbacks `../scripts` + `../../scripts` (dev) — já feito (`src/gui.zig:386`)
+2. **GUI não-elevado** via tarefa `XeMonitor-App` `/RL LIMITED` (elevado = freeze + UIPI bloqueia SendInput)
+3. Reattach CH340 manual: `usbipd attach --wsl=Alpine -b 4-5` (a tarefa `XeMonitor-USB-Attach` falhou silenciosamente)
+4. **`modprobe ch341`** — módulo NÃO auto-carrega no Alpine; sem ele `/dev/ttyUSB0` não aparece
+5. `bridge_ctl restart` após o attach
+
+### Plano
+- [ ] **setup_wsl.sh**: boot cmd do wsl.conf → `modprobe usbip-core && modprobe vhci-hcd && modprobe ch341`; `lsmod | grep ch341` ao final
+- [ ] **setup_usb.bat**: pós-attach → verificar/`modprobe ch341` → poll `/dev/ttyUSB0` (15s) → log em `%APPDATA%\xemonitor\setup-usb-task.log` → exit code ≠0 em falha
+- [ ] **bridge_ctl.bat**: ação `ch341` = `modprobe ch341 && test -c /dev/ttyUSB0`
+- [ ] **install_windows.bat**: detectar instalação existente → `[R]eparo/[N]ova/cancelar` (`/silent`=auto-reparo); reparo idempotente (kill+recopy+setup_wsl+tasks+usb+bridge+GUI via tarefa); backup+reset do `xemonitor-gui.conf`; lockfile single-instance; validar `%DISTRO%` no passo 4; PID no log
+- [ ] **xemonitor.iss**: `[Run]` do GUI → `schtasks /Run /TN XeMonitor-App` (nunca exe direto do instalador elevado)
+- [ ] **gui.zig repairWorker**: passo `bridge_ctl ch341` antes do poll
+- [ ] **diagnose_windows.bat**: `check_ch341` no `--check` e `--fix`
+- [ ] Investigar falha silenciosa da tarefa `XeMonitor-USB-Attach` (log + exit code + retry)
+- [ ] Bump v0.6.0 (`.rc`/`.iss`/`build.zig.zon`) + rebuild ReleaseSafe + ISCC + validação
+- [ ] Docs (.checkpoint.md, AGENTS.md, CHANGELOG.md) + commit + tag `v0.6.0` + `gh release`
+
+---
+
 ## Pendentes para a próxima sessão no Windows
 
 ### 1. (Concluído) Validação no Windows (scan físico + UIPI)
@@ -33,6 +60,12 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 - [x] **Fix `. foi inesperado` no cmd** (2026-08-16): remover parênteses dentro de strings em blocos `if (...)` multi-linha (`install_windows.bat`, `setup_usb.bat`, `run_bridge.bat`, `bridge_ctl.bat`) + remover em-dash UTF-8 (byte 0xE2 0x80 0x94) de `.bat` (cmd parseia em codepage OEM)
 - [x] Instalador E2E validado (EXIT=0): passos 1-7c OK; Alpine baixado do site/importado/default; bridge → `/usr/local/bin/xemonitor-bridge`; init OpenRC registrado (`rc-update add ... default`); serviço **started** escutando 9000; TCP 9000 conectado; tarefas agendadas criadas; `setup_usb.bat /silent` EXIT=0
 - [x] setup.exe recompilado com os `.bat` corrigidos: `dist\XeMonitor-0.5.1-setup.exe` SHA256=`4CAB3BE841CCA37DC730AD5626D65457F986A0986399978410E3531D53A6FAC6` (ISCC em `C:\Users\isaac\AppData\Local\Programs\Inno Setup 6\ISCC.exe`)
+- [x] **2026-08-16 (2ª sessão v0.5.1)**: fix hang do GUI (spawn síncrono de `wsl.exe` no main loop → `portIsOpen` + threads), botão **Reparar** (USB via tarefa `XeMonitor-USB-Attach` + restart bridge + relança cliente), `diagnose_windows.bat` (--check/--fix/--test-serial/--help), VERSIONINFO 0.5.1 nos exes
+  - `src/gui.zig`: `watchdogTick` spawna `devCheckWorker` (thread; `runBridgeCtlOk`), `wslAction` assíncrono no Windows, `startRepair`/`repairWorker`, `spawnClient` retorna addr, botão Reparar (gray + guard, dvui sem `.enabled`), `drainAsyncMsg` no main loop; `zig build`/`build test`/`build gui` OK
+  - `src/i18n.zig`: chaves `btn_repair` + `msg_repair_*` (us/pt_br)
+  - `assets/xemonitor.rc`: bloco `VERSIONINFO` 0.5.1 (xemonitor.exe e xemonitor-gui.exe)
+  - `diagnose_windows.bat` criado: corrigidos CRLF, `goto :main`, e **parênteses em strings dentro de blocos `if (...)`** (causa do ". foi inesperado"; `:report` agora usa `if`s de linha única); `--check`/`--help`/`--test-serial` validados; `timeout 1 dd` no test-serial (não pendura sem scan)
+  - setup ReleaseSafe recompilado: `dist\XeMonitor-0.5.1-setup.exe` **SHA256=`0E7149C9EA2A70D72C581EB952FDDC9284498FC6AAB339F1BC1E6860C3449587`**
 - [ ] Investigar log anômalo da instalação real do usuário (3 passadas intercaladas no `xemonitor-install.log`; 1ª com `%DISTRO%` vazio/rc=-1 → console mostrou "falhou ao copiar o bridge", mas bridge foi copiado na 2ª passada). Teste isolado do `:log` com parênteses passou limpo → causa provável: processos cmd concorrentes no mesmo .bat/log (não reproduzido). Blindar `install_windows.bat`: single-instance lockfile, validar `%DISTRO%` no passo 4, log com PID
 - [x] Fix `zig build test` quebrado: PNG estava em `src\Barcode Scanner.png` mas o `build.zig` referenciou `b.path("Barcode Scanner.png")` (raiz) → `file_hash FileNotFound`. Corrigido nas 2 linhas; build test volta a passar
 - [x] `dist/` adicionado ao `.gitignore` (setup.exe é artefato de build; release via `gh release upload`)

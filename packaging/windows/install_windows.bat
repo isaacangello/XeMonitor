@@ -20,6 +20,7 @@
 ::
 :: Uso: install_windows.bat [/silent]
 ::   /silent  - usado pelo instalador Inno ([Run]): nao faz pause/exit.
+::             Instalacao existente + /silent = auto-reparo.
 :: ============================================================
 setlocal enabledelayedexpansion
 title XeMonitor - Instalar (Windows)
@@ -42,11 +43,16 @@ if not exist "%APP_DIR%\xemonitor.exe" (
 )
 set "INSTALL_DIR=%ProgramFiles%\XeMonitor"
 set "LOGFILE=%TEMP%\xemonitor-install.log"
+set "LOCKFILE=%TEMP%\xemonitor-install.lock"
+
+:: ------- PID do processo (para o log) -------
+set "INSTALL_PID="
+for /f "delims=" %%p in ('powershell -NoProfile -Command "[System.Diagnostics.Process]::GetCurrentProcess().Id"') do set "INSTALL_PID=%%p"
 
 :: ------- Pausa condicional (interativo) -------
 call :pause_helper
 :: ------- Log helper -------
-call :log "=== XeMonitor installer iniciado (silent=%SILENT%) ==="
+call :log "=== XeMonitor installer iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- Auto-elevacao para Admin -------
 net session >nul 2>&1
@@ -56,12 +62,68 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
+:: ------- Lockfile single-instance (evita 2 instaladores concorrentes) -------
+if exist "%LOCKFILE%" (
+    call :log "Lockfile presente: %LOCKFILE%. Outra instancia do instalador pode estar rodando."
+    echo.
+    echo [ERRO] Outra instancia do instalador parece estar em execucao.
+    echo        Se nao houver, apague: %LOCKFILE%
+    echo.
+    call :pause_helper
+    exit /b 1
+)
+echo %INSTALL_PID%>"%LOCKFILE%"
+
 echo ==========================================
 echo  XeMonitor - Instalador Windows
 echo ==========================================
 echo.
 
 call :log "Admin OK"
+
+:: ============================================================
+:: 0. Modo: instalacao existente detectada? -> Reparo / Cancelar
+:: ============================================================
+set "MODE=install"
+set "EXISTING=0"
+if exist "%INSTALL_DIR%\xemonitor-gui.exe" set "EXISTING=1"
+if exist "%APPDATA%\xemonitor\xemonitor-gui.conf" set "EXISTING=1"
+if %EXISTING% equ 1 (
+    if /i "%SILENT%"=="/silent" (
+        call :log "Instalacao existente detectada; modo /silent = auto-reparo."
+        echo       Instalacao existente detectada. Reparando...
+        set "MODE=repair"
+    ) else (
+        echo.
+        echo  ==========================================
+        echo   Instalacao existente detectada.
+        echo  ==========================================
+        echo.
+        echo   R - Reparo: recopia binarios, reconfigura
+        echo       WSL/bridge/USB e inicia o XeMonitor.
+        echo       Preserva o Alpine WSL. A config do GUI
+        echo       e resetada com backup.
+        echo   C - Cancelar.
+        echo.
+        choice /C RC /N /M "Escolha [R]eparo ou [C]ancelar: "
+        if errorlevel 2 (
+            call :log "Instalacao cancelada pelo usuario."
+            del "%LOCKFILE%" >nul 2>&1
+            exit /b 0
+        )
+        call :log "Modo Reparo selecionado."
+        echo       Reparando instalacao existente...
+        set "MODE=repair"
+    )
+)
+
+:: No modo Reparo, para GUI/cliente/bridge antes de recopiar arquivos
+if /i "%MODE%"=="repair" (
+    taskkill /F /IM xemonitor-gui.exe >nul 2>&1
+    taskkill /F /IM xemonitor.exe >nul 2>&1
+    call :log "Processos xemonitor-gui/xemonitor encerrados."
+    echo       Instancias antigas de xemonitor encerradas.
+)
 
 :: ============================================================
 :: 1. WSL2
@@ -82,11 +144,13 @@ if !WSL_RC! equ 0 (
     if !WSL_RC! equ 0 (
         call :log "WSL instalado. Pode ser necessario reiniciar para concluir."
         echo       WSL instalado. REINICIE o Windows e rode o instalador novamente.
+        del "%LOCKFILE%" >nul 2>&1
         call :pause_helper
         exit /b 1
     ) else (
         call :log "ERRO: falha ao instalar WSL com rc=!WSL_RC!."
         echo [ERRO] Falha ao instalar WSL. Instale manualmente: wsl --install
+        del "%LOCKFILE%" >nul 2>&1
         call :pause_helper
         exit /b 1
     )
@@ -158,6 +222,7 @@ if !WSL_RC! neq 0 (
         echo           o arquivo alpine-minirootfs-*.x86_64.tar.gz
         echo        2. wsl --import Alpine C:\wsl\Alpine alpine-minirootfs-*.tar.gz --version 2
         echo        3. Depois rode este instalador novamente.
+        del "%LOCKFILE%" >nul 2>&1
         call :pause_helper
         exit /b 1
     )
@@ -177,6 +242,17 @@ echo.
 :: ============================================================
 :: 4. Bridge: binario + setup WSL + servico
 :: ============================================================
+:: Valida %DISTRO% antes de qualquer `wsl -d` (um DISTRO vazio vira
+:: 'wsl -d  -u root' -> rc=-1 e falha silenciosa em TODOS os passos).
+if "%DISTRO%"=="" (
+    call :log "ERRO: DISTRO vazio apos o passo 3; abortando."
+    echo.
+    echo [ERRO] Distro WSL nao determinada. Abortando instalacao.
+    echo.
+    del "%LOCKFILE%" >nul 2>&1
+    call :pause_helper
+    exit /b 1
+)
 echo [4/7] Configurando WSL (udev/usbip/servico)...
 
 :: 4a. Envia setup_wsl.sh para o WSL e executa
@@ -267,25 +343,16 @@ echo.
 :: ============================================================
 echo [5b] Gravando config do GUI (wsl + auto_start)...
 set "CFG_DIR=%APPDATA%\xemonitor"
-if not exist "%CFG_DIR%" mkdir "%CFG_DIR%"
-if not exist "%CFG_DIR%\xemonitor-gui.conf" (
-    (
-        echo tcp_host=127.0.0.1
-        echo tcp_port=9000
-        echo server_mode=wsl
-        echo bridge_path=
-        echo client_path=
-        echo log_path=
-        echo auto_start=true
-        echo tray_enabled=true
-        echo lang=pt_br
-    )>"%CFG_DIR%\xemonitor-gui.conf"
-    call :log "xemonitor-gui.conf gravado em %CFG_DIR%."
-    echo       Config do GUI gravada.
-) else (
-    call :log "xemonitor-gui.conf ja existe em %CFG_DIR%; mantido."
-    echo       Config do GUI ja existia; mantida.
+set "CFG_FILE=%CFG_DIR%\xemonitor-gui.conf"
+if /i "%MODE%"=="repair" (
+    call :log "Modo Reparo: resetando config do GUI com backup."
+    echo       [Reparo] Resetando config do GUI (backup em xemonitor-gui.conf.bak).
+    if exist "%CFG_FILE%" (
+        copy /y "%CFG_FILE%" "%CFG_FILE%.bak" >nul 2>&1
+        del "%CFG_FILE%" >nul 2>&1
+    )
 )
+call :ensure_gui_cfg "%CFG_DIR%"
 echo.
 
 :: ============================================================
@@ -298,9 +365,9 @@ if exist "%APP_DIR%\scripts\install_autostart.bat" (
     echo       Tarefas agendadas criadas: USB-Attach, Bridge, App.
 ) else (
     call :log "AVISO: scripts/install_autostart.bat nao encontrado; criando via schtasks..."
-    schtasks /Create /F /TN "XeMonitor-USB-Attach" /TR "\"%INSTALL_DIR%\setup_usb.bat\"" /SC ONLOGON /RL HIGHEST >nul 2>&1
+    schtasks /Create /F /TN "XeMonitor-USB-Attach" /TR "\"%INSTALL_DIR%\setup_usb.bat\" /silent" /SC ONLOGON /RL HIGHEST >nul 2>&1
     schtasks /Create /F /TN "XeMonitor-Bridge" /TR "cmd /c \"\"%INSTALL_DIR%\packaging\windows\start_bridge.cmd\"\"" /SC ONLOGON /DELAY 0000:30 >nul 2>&1
-    schtasks /Create /F /TN "XeMonitor-App" /TR "cmd /c \"\"%INSTALL_DIR%\packaging\windows\start_xemonitor.cmd\"\"" /SC ONLOGON /DELAY 0000:45 /RL LIMITED >nul 2>&1
+    schtasks /Create /F /TN "XeMonitor-App" /TR "\"%INSTALL_DIR%\xemonitor-gui.exe\"" /SC ONLOGON /DELAY 0000:45 /RL LIMITED >nul 2>&1
     call :log "Tarefas criadas via schtasks."
 )
 echo.
@@ -374,6 +441,8 @@ echo.
 echo  Para encerrar:   stop_bridge.bat
 echo  Para remover:    scripts\uninstall_autostart.bat + apagar %INSTALL_DIR%
 echo ==========================================
+del "%LOCKFILE%" >nul 2>&1
+call :log "Instalador concluido (pid=%INSTALL_PID%, modo=%MODE%)."
 call :pause_helper
 exit /b 0
 
@@ -415,6 +484,54 @@ exit /b 0
 :: ============================================================
 :pause_helper
 if /i not "%SILENT%"=="/silent" pause
+exit /b 0
+
+:: ============================================================
+:: :ensure_gui_cfg <cfg_dir>
+:: Garante que xemonitor-gui.conf exista e use server_mode=wsl (unico modo
+:: valido no Windows: bridge via bridge_ctl.bat). Se existir config antiga com
+:: server_mode invalido (ex.: subprocess), faz backup (.bak) e regrava so a
+:: linha server_mode=wsl, preservando as demais preferencias do usuario.
+:: ============================================================
+:ensure_gui_cfg
+set "CFG_DIR=%~1"
+set "CFG_FILE=%CFG_DIR%\xemonitor-gui.conf"
+if not exist "%CFG_DIR%" mkdir "%CFG_DIR%"
+if not exist "%CFG_FILE%" goto :cfg_write_new
+findstr /B /I "server_mode=wsl" "%CFG_FILE%" >nul 2>&1
+if not errorlevel 1 goto :cfg_keep
+call :log "xemonitor-gui.conf com server_mode invalido; backup e migrando para wsl."
+copy /y "%CFG_FILE%" "%CFG_FILE%.bak" >nul 2>&1
+call :log "Backup: %CFG_FILE%.bak"
+echo       Config antiga detectada; backup em xemonitor-gui.conf.bak.
+findstr /V /B /I "server_mode=" "%CFG_FILE%" > "%CFG_DIR%\gui-cfg.tmp"
+echo server_mode=wsl>>"%CFG_DIR%\gui-cfg.tmp"
+move /y "%CFG_DIR%\gui-cfg.tmp" "%CFG_FILE%" >nul 2>&1
+call :log "server_mode=wsl gravado em %CFG_FILE%."
+echo       Config migrada para wsl.
+goto :cfg_done
+
+:cfg_write_new
+(
+    echo tcp_host=127.0.0.1
+    echo tcp_port=9000
+    echo server_mode=wsl
+    echo bridge_path=
+    echo client_path=
+    echo log_path=
+    echo auto_start=true
+    echo tray_enabled=true
+    echo lang=pt_br
+)>"%CFG_FILE%"
+call :log "xemonitor-gui.conf gravado em %CFG_DIR%."
+echo       Config do GUI gravada.
+goto :cfg_done
+
+:cfg_keep
+call :log "xemonitor-gui.conf ja existe e valida (server_mode=wsl); mantido."
+echo       Config do GUI valida; mantida.
+
+:cfg_done
 exit /b 0
 
 :: ============================================================

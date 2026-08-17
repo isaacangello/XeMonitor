@@ -67,19 +67,23 @@ fi
 # [boot] command roda como root no boot do WSL, antes de qualquer sessao.
 # NAO usa systemd=true: no Alpine o init e OpenRC (systemd=false/missing e ok).
 WSL_CONF="/etc/wsl.conf"
-BOOT_CMD='/sbin/modprobe usbip-core && /sbin/modprobe vhci-hcd'
+# ch341: driver USB-Serial do CH340. SEM ele o /dev/ttyUSB0 nao aparece apos o
+# attach via usbipd (módulo não auto-carrega no Alpine). O runtime check em
+# setup_usb.bat / bridge_ctl ch341 e a garantia primaria; este boot cmd e a
+# aceleracao para WSLs que já estão com o wsl.conf atualizado.
+BOOT_CMD='/sbin/modprobe usbip-core && /sbin/modprobe vhci-hcd && /sbin/modprobe ch341'
 
-if [ -f "$WSL_CONF" ] && grep -q "usbip-core\|vhci-hcd" "$WSL_CONF" 2>/dev/null; then
-    echo "[setup] wsl.conf ja configurado para usbip."
+if [ -f "$WSL_CONF" ] && grep -q "modprobe ch341" "$WSL_CONF" 2>/dev/null; then
+    echo "[setup] wsl.conf ja configurado para usbip + ch341."
 else
-    echo "[setup] Configurando wsl.conf para carregar modulos usbip..."
+    echo "[setup] Configurando wsl.conf para carregar usbip + ch341..."
     # Garante a secao [boot] com command
     if [ -f "$WSL_CONF" ] && grep -q "^\[boot\]" "$WSL_CONF" 2>/dev/null; then
         if ! grep -q "^command" "$WSL_CONF" 2>/dev/null; then
-            sed -i '/^\[boot\]/a command = /sbin/modprobe usbip-core \&\& /sbin/modprobe vhci-hcd' "$WSL_CONF"
+            sed -i '/^\[boot\]/a command = /sbin/modprobe usbip-core && /sbin/modprobe vhci-hcd && /sbin/modprobe ch341' "$WSL_CONF"
         else
             # Ja tem command, faz append dos modulos (evita duplicar)
-            sed -i 's/^command = \(.*\)/command = \1 \&\& \/sbin\/modprobe usbip-core \&\& \/sbin\/modprobe vhci-hcd/' "$WSL_CONF"
+            sed -i 's/^command = \(.*\)/command = \1 \&\& \/sbin\/modprobe usbip-core \&\& \/sbin\/modprobe vhci-hcd \&\& \/sbin\/modprobe ch341/' "$WSL_CONF"
         fi
     else
         # Cria wsl.conf com [boot] + command. Alpine: sem systemd=true
@@ -91,6 +95,15 @@ else
     fi
     echo "[setup] wsl.conf atualizado:"
     cat "$WSL_CONF"
+fi
+
+# ---- Garante o modulo ch341 carregado AGORA (runtime, nao so no boot) ----
+echo "[setup] Garantindo modulo ch341 carregado..."
+/sbin/modprobe ch341 2>/dev/null || modprobe ch341 2>/dev/null || true
+if lsmod 2>/dev/null | grep -q ch341; then
+    echo "[setup] OK: modulo ch341 carregado."
+else
+    echo "[setup] AVISO: nao consegui confirmar modulo ch341 no lsmod."
 fi
 
 # ---- Passwordless sudo para modprobe (opcional, facilita reload manual) ----

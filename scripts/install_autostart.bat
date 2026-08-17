@@ -26,8 +26,9 @@ echo Raiz do projeto: %ROOT%
 echo.
 
 :: 1. USB attach (logon). Auto-eleva (usbipd precisa de admin p/ bind/attach).
+::    /silent: sem pause no final (senao a tarefa fica "Running" pendurada).
 echo [1/3] Tarefa: XeMonitor-USB-Attach (attach CH340 ao WSL no logon)...
-schtasks /Create /F /TN "XeMonitor-USB-Attach" /TR "\"%ROOT%\setup_usb.bat\"" /SC ONLOGON /RL HIGHEST
+schtasks /Create /F /TN "XeMonitor-USB-Attach" /TR "\"%ROOT%\setup_usb.bat\" /silent" /SC ONLOGON /RL HIGHEST
 if %errorlevel% neq 0 ( echo        [ERRO] falha ao criar. & goto :fail )
 
 :: 2. Bridge (logon, +30s). bridge_ctl.bat detecta Alpine(OpenRC)/Arch(systemd)
@@ -38,9 +39,10 @@ if %errorlevel% neq 0 ( echo        [ERRO] falha ao criar. & goto :fail )
 
 :: 3. GUI principal (logon, +45s). /RL LIMITED p/ manter UIPI em integridade Media.
 ::    xemonitor-gui.exe le a config (server_mode=wsl, auto_start=true) e
-::    inicia bridge + cliente. Usa o wrapper .cmd (packaging\windows).
+::    inicia bridge + cliente automaticamente. Launch direto (sem .cmd wrapper)
+::    para evitar janela de console — o exe ja e subsystem=windows.
 echo [3/3] Tarefa: XeMonitor-App (inicia o GUI, +45s)...
-schtasks /Create /F /TN "XeMonitor-App" /TR "\"%ROOT%\packaging\windows\start_xemonitor.cmd\"" /SC ONLOGON /DELAY 0000:45 /RL LIMITED
+schtasks /Create /F /TN "XeMonitor-App" /TR "\"%ROOT%\xemonitor-gui.exe\"" /SC ONLOGON /DELAY 0000:45 /RL LIMITED
 if %errorlevel% neq 0 ( echo        [ERRO] falha ao criar. & goto :fail )
 
 echo.

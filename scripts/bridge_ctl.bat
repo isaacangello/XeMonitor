@@ -8,7 +8,7 @@ setlocal enabledelayedexpansion
 :: Alpine nao estiver presente, pede para rodar o instalador.
 ::
 :: Uso:  bridge_ctl.bat <acao>
-:: Acoes: status | start | stop | restart | enable | dev
+:: Acoes: status | start | stop | restart | enable | dev | ch341
 :: Env:   XEMONITOR_WSL_DISTRO=Alpine  (override)
 :: ============================================================
 
@@ -42,6 +42,7 @@ if /i "%ACTION%"=="stop"    goto :rc_stop
 if /i "%ACTION%"=="restart" goto :rc_restart
 if /i "%ACTION%"=="enable"  goto :rc_enable
 if /i "%ACTION%"=="dev"     goto :rc_dev
+if /i "%ACTION%"=="ch341"   goto :rc_ch341
 echo [bridge_ctl] acao invalida: %ACTION%
 exit /b 2
 
@@ -68,4 +69,10 @@ exit /b !errorlevel!
 :rc_dev
 :: Verifica se o scanner USB-Serial (CH340) esta presente no WSL
 %RUN% sh -c "test -c /dev/ttyUSB0"
+exit /b !errorlevel!
+
+:rc_ch341
+:: Garante o driver ch341 carregado (senao /dev/ttyUSB0 nao aparece apos o
+:: attach via usbipd) e confirma o device. Modprobe e idempotente.
+%RUN% sh -c "modprobe ch341 && test -c /dev/ttyUSB0"
 exit /b !errorlevel!

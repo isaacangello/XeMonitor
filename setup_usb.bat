@@ -72,13 +72,32 @@ if %errorlevel% neq 0 (
 echo        OK - CH340 compartilhado (Ready for attach).
 
 :: ------- Attach ao WSL -------
+:: No logon o WSL pode ainda estar subindo -> espera o Alpine responder antes
+:: do attach (um attach com a distro parada falha em silencio na tarefa
+:: XeMonitor-USB-Attach).
 echo.
-echo [3/4] Attachando CH340 ao WSL (%DISTRO%)...
+echo [3/4] Aguardando WSL %DISTRO% pronto...
+set "WSL_OK=0"
+for /l %%I in (1,1,30) do (
+    wsl -d %DISTRO% echo ok >nul 2>&1
+    if !errorlevel! equ 0 set "WSL_OK=1"
+    if !WSL_OK! equ 1 goto :wsl_ok
+    timeout /t 1 /nobreak >nul
+)
+:wsl_ok
+if !WSL_OK! neq 1 (
+    echo [ERRO] WSL %DISTRO% nao respondeu apos 30s.
+    call :pause_helper
+    exit /b 1
+)
+echo        OK - WSL pronto.
+
+echo.
+echo Attachando CH340 ao WSL (%DISTRO%)...
 "%USBIPD%" attach -w %DISTRO% --hardware-id 1a86:7523
 if %errorlevel% neq 0 (
     echo.
-    echo [AVISO] Falha no attach. Tentando com shutdown do WSL...
-    wsl --shutdown
+    echo [AVISO] Falha no attach. Tentando novamente em 5s...
     timeout /t 5 /nobreak >nul
     "%USBIPD%" attach -w %DISTRO% --hardware-id 1a86:7523
     if %errorlevel% neq 0 (
@@ -93,35 +112,61 @@ if %errorlevel% neq 0 (
 )
 echo        OK - CH340 attachado ao WSL.
 
-:: ------- Verifica /dev/ttyUSB0 -------
+:: ------- Garante o modulo ch341 carregado no WSL -------
 echo.
-echo [4/4] Aguardando dispositivo e verificando...
-timeout /t 3 /nobreak >nul
-
-wsl -d %DISTRO% test -c /dev/ttyUSB0 2>nul
+echo [4/4] Verificando modulo ch341 + /dev/ttyUSB0...
+wsl -d %DISTRO% -u root modprobe ch341 >nul 2>&1
+wsl -d %DISTRO% -u root sh -c "lsmod | grep ch341" >nul 2>&1
 if %errorlevel% equ 0 (
-    echo [OK] /dev/ttyUSB0 disponivel!
-    wsl -d %DISTRO% ls -la /dev/ttyUSB0
+    echo        OK - modulo ch341 carregado.
 ) else (
-    echo [AVISO] /dev/ttyUSB0 nao encontrado.
-    echo         Execute manualmente: wsl -d %DISTRO% ls -la /dev/ttyUSB0
-    echo.
-    echo         Se persistir, tente:
-    echo         1. wsl --shutdown
-    echo         2. Execute este script novamente
-    echo         3. Verifique se os modulos do kernel estao carregados:
-    echo            wsl -d %DISTRO% -u root modprobe usbip-core
-    echo            wsl -d %DISTRO% -u root modprobe vhci-hcd
+    echo        [AVISO] modulo ch341 nao confirmado. Verifique: wsl -d %DISTRO% -u root modprobe ch341
 )
 
+:: ------- Poll do /dev/ttyUSB0 (ate ~15s) -------
+set "TTY_OK=0"
+for /l %%I in (1,1,15) do (
+    wsl -d %DISTRO% test -c /dev/ttyUSB0 >nul 2>&1
+    if !errorlevel! equ 0 set "TTY_OK=1"
+    if !TTY_OK! equ 1 goto :tty_ok
+    timeout /t 1 /nobreak >nul
+)
+:tty_ok
+if !TTY_OK! equ 1 (
+    echo [OK] /dev/ttyUSB0 disponivel!
+    wsl -d %DISTRO% ls -la /dev/ttyUSB0
+    if not exist "%APPDATA%\xemonitor" mkdir "%APPDATA%\xemonitor" >nul 2>&1
+    echo %date% %time%  setup_usb: /dev/ttyUSB0 detectado - OK>>"%APPDATA%\xemonitor\setup-usb-task.log"
+    echo.
+    echo ==========================================
+    echo  Setup USB concluido!
+    echo  Agora execute: run_bridge.bat
+    echo ==========================================
+    echo.
+    call :pause_helper
+    exit /b 0
+)
+
+:: ------- Falha: tty ausente -------
+echo [ERRO] /dev/ttyUSB0 nao encontrado apos 15s.
+echo         Execute manualmente: wsl -d %DISTRO% ls -la /dev/ttyUSB0
+echo.
+echo         Se persistir, tente:
+echo         1. wsl --shutdown
+echo         2. Execute este script novamente
+echo         3. Verifique se os modulos do kernel estao carregados:
+echo            wsl -d %DISTRO% -u root modprobe usbip-core
+echo            wsl -d %DISTRO% -u root modprobe vhci-hcd
+echo            wsl -d %DISTRO% -u root modprobe ch341
 echo.
 echo ==========================================
-echo  Setup USB concluido!
-echo  Agora execute: run_bridge.bat
+echo  Setup USB falhou.
 echo ==========================================
 echo.
+if not exist "%APPDATA%\xemonitor" mkdir "%APPDATA%\xemonitor" >nul 2>&1
+echo %date% %time%  setup_usb: /dev/ttyUSB0 NAO detectado apos attach>>"%APPDATA%\xemonitor\setup-usb-task.log"
 call :pause_helper
-exit /b 0
+exit /b 1
 
 :: ============================================================
 :: :pause_helper - pausa so em modo interativo (sem /silent)
