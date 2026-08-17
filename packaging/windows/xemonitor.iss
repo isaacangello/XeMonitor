@@ -12,7 +12,7 @@
 ;   iscc packaging\windows\xemonitor.iss
 ; ============================================================
 #define MyAppName "XeMonitor"
-#define MyAppVersion "0.7.0"
+#define MyAppVersion "0.7.1"
 #define MyAppPublisher "XeMonitor"
 #define MyAppExeName "xemonitor-gui.exe"
 
@@ -34,6 +34,8 @@ ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 ; UIPI: o instalador pede admin (tarefas + Program Files), mas o
 ; [Run] que inicia o xemonitor nao roda elevado (tarefa /RL LIMITED).
+; Detecta versao existente via [Code] PrepareToInstall e desinstala
+; automaticamente (upgrade, downgrade e restore).
 
 [Languages]
 Name: "ptbr"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -82,9 +84,42 @@ Filename: "{app}\packaging\windows\install_windows.bat"; WorkingDir: "{app}"; Pa
 ; bloqueia o SendInput). A tarefa XeMonitor-App foi criada pelo passo 1 com
 ; /RL LIMITED; basta dispara-la. schtasks /Run nao eleva (o nivel da tarefa
 ; governa), entao o GUI roda em integridade Media, correta p/ injecao.
-Filename: "{cmd}"; Parameters: "/c schtasks /Run /TN ""XeMonitor-App"""; Flags: nowait skipifsilent; StatusMsg: "Iniciando XeMonitor..."
+Filename: "{cmd}"; Parameters: "/c schtasks /Run /TN ""XeMonitor-App"""; Flags: nowait; StatusMsg: "Iniciando XeMonitor..."
 
 [UninstallRun]
-; Desinstalador visivel e em primeiro plano (nao runhidden/runascurrentuser):
-; herda o admin do uninstaller, mostra o progresso e /silent suprime o pause.
+; Matar processos xemonitor antes de remover tarefas (arquivos podem estar locked).
+; herda o admin do uninstaller; skipifdoesntexist evita erro se processos nao existem.
+Filename: "{cmd}"; Parameters: "/c taskkill /F /IM xemonitor-gui.exe >nul 2>&1 & taskkill /F /IM xemonitor.exe >nul 2>&1"; Flags: skipifdoesntexist
+; Remove tarefas agendadas. /silent suprime o pause.
 Filename: "{app}\scripts\uninstall_autostart.bat"; Parameters: "/silent"; StatusMsg: "Removendo tarefas agendadas..."
+
+[Code]
+// Detecta instalacao existente via registro e desinstala automaticamente.
+// Funciona para upgrade (mesma versao), downgrade (versao mais nova) e restore.
+const
+  APP_ID = '{D4B7C7E6-5E1A-4B9A-9A11-7F4E0B6D2C88}';
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+  UninstallerPath: String;
+  UninstallKey: String;
+begin
+  Result := '';
+  UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + APP_ID + '_is1';
+
+  // Matar processos xemonitor que possam impedir a desinstalacao
+  Exec('taskkill', '/F /IM xemonitor-gui.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill', '/F /IM xemonitor.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Buscar caminho do desinstalador antigo no registro
+  if RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', UninstallerPath) then
+  begin
+    UninstallerPath := ExpandConstant(UninstallerPath);
+    if FileExists(UninstallerPath) then
+    begin
+      // Desinstalar versao existente silenciosamente
+      Exec(UninstallerPath, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
+  end;
+end;

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-08-17
+
+### Changed
+- **Instalador: desinstalacao automatica** — `UninstallExistingInstall=yes` no
+  Inno Setup. Qualquer versao existente (mesma, mais velha ou mais nova) e
+  desinstalada automaticamente antes de instalar. Suporta upgrade, downgrade
+  e restore.
+- **Alpine sempre fresh** — `install_windows.bat` remove Alpine existente
+  e reimporta do minirootfs. Garante estado limpo em qualquer reinstalacao.
+- **Processos mortos antes da desinstalacao** — `taskkill` no `[UninstallRun]`
+  antes do `uninstall_autostart.bat` para evitar arquivos locked.
+- **GUI inicia apos instalacao** — removido `skipifsilent` do `[Run]` step 2;
+  a tarefa `XeMonitor-App` e disparada mesmo em modo silencioso.
+
 ## [0.7.0] — 2026-08-17
 
 ### Changed

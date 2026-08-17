@@ -1,6 +1,6 @@
 @echo off
 :: ============================================================
-:: install_windows.bat v0.7.0 — Instalador Windows do XeMonitor.
+:: install_windows.bat v0.7.1 — Instalador Windows do XeMonitor.
 :: 4 fases claras: Windows deps -> Alpine deps -> Alpine config -> Final.
 ::
 ::  FASE 1  Dependencias Windows + Alpine (WSL2, winget, wget, usbipd, Alpine)
@@ -12,7 +12,7 @@
 ::   /silent  — Inno Setup ([Run]): nao faz pause. Instalacao existente = auto-reparo.
 :: ============================================================
 setlocal enabledelayedexpansion
-title XeMonitor - Instalar v0.7.0 (Windows)
+title XeMonitor - Instalar v0.7.1 (Windows)
 
 :: ------- Config -------
 set "SILENT=%~1"
@@ -40,7 +40,7 @@ set "INSTALL_PID="
 for /f "delims=" %%p in ('powershell -NoProfile -Command "[System.Diagnostics.Process]::GetCurrentProcess().Id"') do set "INSTALL_PID=%%p"
 
 :: ------- Log helper -------
-call :log "=== XeMonitor installer v0.7.0 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
+call :log "=== XeMonitor installer v0.7.1 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- Auto-elevacao para Admin -------
 net session >nul 2>&1
@@ -63,7 +63,7 @@ if exist "%LOCKFILE%" (
 echo %INSTALL_PID%>"%LOCKFILE%"
 
 echo ==========================================
-echo  XeMonitor v0.7.0 - Instalador Windows
+echo  XeMonitor v0.7.1 - Instalador Windows
 echo ==========================================
 echo.
 call :log "Admin OK"
@@ -269,38 +269,38 @@ if exist "%TARBALL%" (
 )
 echo.
 
-:: [6] Import Alpine
-echo [6/6] Verificando/Importando Alpine...
-call :runwsl alpine_ok 60 distro_ok
+:: [6] Import Alpine (sempre fresh)
+echo [6/6] Preparando Alpine (fresh)...
+:: Remove Alpine existente (se houver) para garantir estado limpo
+call :runwsl alpine_check 60 distro_ok
+if !WSL_RC! equ 0 (
+    call :log "Alpine existente. Removendo para instalacao fresh..."
+    echo       Removendo Alpine existente...
+    wsl --unregister Alpine >nul 2>&1
+)
+:: Importa fresh
+echo       Importando Alpine fresh...
+set "XEMONITOR_TARBALL=%TARBALL%"
+call :runwsl import_alpine 300 import_alpine
 if !WSL_RC! neq 0 (
-    if !WSL_RC! equ 200 (
-        call :log "AVISO: wsl -d Alpine TIMEOUT. Tentando import..."
-    ) else (
-        call :log "Alpine ausente. Importando..."
-    )
-    echo       Alpine ausente. Importando do minirootfs...
-    set "XEMONITOR_TARBALL=%TARBALL%"
-    call :runwsl import_alpine 300 import_alpine
-    if !WSL_RC! neq 0 (
-        call :log "ERRO: falha ao importar Alpine (rc=!WSL_RC!)."
-        echo [ERRO] Nao foi possivel importar Alpine.
-        del "%LOCKFILE%" >nul 2>&1
-        call :pause_helper
-        exit /b 1
-    )
-    call :runwsl alpine_ok2 60 distro_ok
-    if !WSL_RC! neq 0 (
-        call :log "ERRO: Alpine indisponivel apos import."
-        echo [ERRO] Alpine indisponivel apos import.
-        del "%LOCKFILE%" >nul 2>&1
-        call :pause_helper
-        exit /b 1
-    )
+    call :log "ERRO: falha ao importar Alpine (rc=!WSL_RC!)."
+    echo [ERRO] Nao foi possivel importar Alpine.
+    del "%LOCKFILE%" >nul 2>&1
+    call :pause_helper
+    exit /b 1
+)
+call :runwsl alpine_ok2 60 distro_ok
+if !WSL_RC! neq 0 (
+    call :log "ERRO: Alpine indisponivel apos import."
+    echo [ERRO] Alpine indisponivel apos import.
+    del "%LOCKFILE%" >nul 2>&1
+    call :pause_helper
+    exit /b 1
 )
 set "DISTRO=Alpine"
 call :runwsl set_default 60 set_default
 call :log "Distro WSL: %DISTRO%"
-echo       Alpine pronto.
+echo       Alpine pronto (fresh).
 echo.
 call :log "=== FASE 1 concluida ==="
 
@@ -548,7 +548,7 @@ if !WSL_RC! equ 0 (
 
 :: [6] Resumo
 echo ==========================================
-echo  Instalacao v0.7.0 concluida!
+echo  Instalacao v0.7.1 concluida!
 echo.
 echo   Instalado em:   %INSTALL_DIR%
 echo   Distro WSL:     %DISTRO% (Alpine/OpenRC)

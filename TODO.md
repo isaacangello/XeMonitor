@@ -31,6 +31,26 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 
 ---
 
+## v0.7.1 — Uninstall automatico + Alpine fresh (2026-08-17)
+
+> Inno Setup desinstala qualquer versao existente antes de instalar. Alpine
+> sempre reimportado fresh. Corrige o problema do instalador fechar ao
+> detectar instalacao existente.
+
+### Feito
+- [x] **xemonitor.iss**: `UninstallExistingInstall=yes` — desinstalacao automatica
+- [x] **xemonitor.iss**: `taskkill` no `[UninstallRun]` antes do `uninstall_autostart.bat`
+- [x] **xemonitor.iss**: removido `skipifsilent` do `[Run]` step 2 (GUI inicia apos install)
+- [x] **install_windows.bat**: Alpine sempre fresh (remove + reimport em vez de reutilizar)
+- [x] **Bump 0.7.1**: xemonitor.rc, build.zig.zon, xemonitor.iss, install_windows.bat
+- [x] **CHANGELOG.md**: entrada v0.7.1
+
+### Pendente
+- [ ] Build + test + ISCC + validacao
+- [ ] Commit + tag `v0.7.1` + `gh release`
+
+---
+
 ## v0.7.0 — Reformulação do Instalador Windows (2026-08-17)
 
 > Instalador reestruturado em 4 fases claras. Elimina fragilidade do `sh -c`
