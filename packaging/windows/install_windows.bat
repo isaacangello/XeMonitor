@@ -1,6 +1,6 @@
 @echo off
 :: ============================================================
-:: install_windows.bat v0.7.1 — Instalador Windows do XeMonitor.
+:: install_windows.bat v0.7.2 — Instalador Windows do XeMonitor.
 :: 4 fases claras: Windows deps -> Alpine deps -> Alpine config -> Final.
 ::
 ::  FASE 1  Dependencias Windows + Alpine (WSL2, winget, wget, usbipd, Alpine)
@@ -12,7 +12,8 @@
 ::   /silent  — Inno Setup ([Run]): nao faz pause. Instalacao existente = auto-reparo.
 :: ============================================================
 setlocal enabledelayedexpansion
-title XeMonitor - Instalar v0.7.1 (Windows)
+title XeMonitor - Instalar v0.7.2 (Windows)
+set "_FATAL=0"
 
 :: ------- Config -------
 set "SILENT=%~1"
@@ -33,6 +34,7 @@ set "INSTALL_DIR=%ProgramFiles%\XeMonitor"
 set "LOG_DIR=%APPDATA%\xemonitor\logs"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 set "LOGFILE=%LOG_DIR%\install.log"
+echo DEBUG-LOGFILE=!LOGFILE!>>"%LOG_DIR%\install.log"
 set "LOCKFILE=%TEMP%\xemonitor-install.lock"
 
 :: ------- PID do processo -------
@@ -40,41 +42,57 @@ set "INSTALL_PID="
 for /f "delims=" %%p in ('powershell -NoProfile -Command "[System.Diagnostics.Process]::GetCurrentProcess().Id"') do set "INSTALL_PID=%%p"
 
 :: ------- Log helper -------
-call :log "=== XeMonitor installer v0.7.1 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
+call :log "=== XeMonitor installer v0.7.2 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- Auto-elevacao para Admin -------
-net session >nul 2>&1
-if %errorlevel% neq 0 (
+:: NOTA: `net session` pode falhar mesmo para admins (servico SMB/LanmanServer parado).
+:: Usa `fltmc` (Filter Manager) como check alternativo — requer admin.
+set "IS_ADMIN=1"
+fltmc >nul 2>&1 || set "IS_ADMIN=0"
+if "%IS_ADMIN%"=="0" (
     call :log "Solicitando privilegios de administrador..."
-    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\"' -Verb RunAs"
-    exit /b
+    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\" %*' -Verb RunAs"
+    set "_DIE_RC=0"
 )
+if "%IS_ADMIN%"=="0" goto :die
 
 :: ------- Lockfile -------
 if exist "%LOCKFILE%" (
-    call :log "Lockfile presente: %LOCKFILE%. Outra instancia pode estar rodando."
-    echo.
-    echo [ERRO] Outra instancia do instalador parece estar em execucao.
-    echo        Se nao houver, apague: %LOCKFILE%
-    echo.
-    call :pause_helper
-    exit /b 1
+    set "OLD_PID="
+    set /p OLD_PID=<"%LOCKFILE%" 2>nul
+    if defined OLD_PID (
+        tasklist /FI "PID eq !OLD_PID!" 2>nul | findstr /I "!OLD_PID!" >nul 2>&1
+        if !errorlevel! equ 0 (
+            call :log "Lockfile presente e processo !OLD_PID! ativo. Matando..."
+            taskkill /PID !OLD_PID! /F >nul 2>&1
+            timeout /t 2 /nobreak >nul 2>&1
+        ) else (
+            call :log "Lockfile presente mas processo !OLD_PID! morto. Limpando."
+        )
+    )
+    del "%LOCKFILE%" >nul 2>&1
 )
 echo %INSTALL_PID%>"%LOCKFILE%"
 
 echo ==========================================
-echo  XeMonitor v0.7.1 - Instalador Windows
+echo  XeMonitor v0.7.2 - Instalador Windows
 echo ==========================================
 echo.
-call :log "Admin OK"
+call :log "TRACE: Admin OK. IS_ADMIN=%IS_ADMIN%, SILENT=%SILENT%"
+ECHO DEBUG-BEFORE-82
 
+echo TRACE-82-BEFORE
+call :log "TRACE: pos-header, entrando Fase 0"
+echo TRACE-82-AFTER
 :: ============================================================
 :: 0. Modo: instalacao existente -> Reparo / Cancelar
 :: ============================================================
+echo TRACE-PHASE0-ENTRY
 set "MODE=install"
 set "EXISTING=0"
 if exist "%INSTALL_DIR%\xemonitor-gui.exe" set "EXISTING=1"
 if exist "%APPDATA%\xemonitor\xemonitor-gui.conf" set "EXISTING=1"
+echo TRACE-EXISTING=%EXISTING%
 if %EXISTING% equ 1 (
     if /i "%SILENT%"=="/silent" (
         call :log "Instalacao existente; modo /silent = auto-reparo."
@@ -93,19 +111,24 @@ if %EXISTING% equ 1 (
         choice /C RC /N /M "Escolha [R]eparo ou [C]ancelar: "
         if errorlevel 2 (
             call :log "Instalacao cancelada."
-            del "%LOCKFILE%" >nul 2>&1
-            exit /b 0
+            set "_DIE_RC=0"
+            set "_FATAL=1"
         )
         set "MODE=repair"
     )
 )
+if "!_FATAL!"=="1" goto :die
 if /i "%MODE%"=="repair" (
     taskkill /F /IM xemonitor-gui.exe >nul 2>&1
     taskkill /F /IM xemonitor.exe >nul 2>&1
     call :log "Processos antigos encerrados."
     echo       Instancias antigas encerradas.
 )
+echo TRACE-121-BEFORE
+call :log "TRACE: Fase 0 concluida. MODE=%MODE%, EXISTING=%EXISTING%"
+echo TRACE-121-AFTER
 
+echo TRACE-PHASE1-ENTRY
 :: ============================================================
 :: FASE 1/4: Dependencias Windows + Alpine
 :: ============================================================
@@ -126,22 +149,23 @@ if !WSL_RC! equ 0 (
     call :log "AVISO: wsl --status TIMEOUT em contexto elevado. Continuando..."
     echo       [AVISO] wsl --status travou por timeout. Seguindo...
 ) else (
-    call :log "WSL nao detectado (rc=!WSL_RC!). Instalando..."
+    call :log "WSL nao detectado rc=!WSL_RC! Instalando..."
     echo       WSL nao detectado. Instalando sem distro padrao...
     call :runwsl install_wsl 180 install_wsl
     if !WSL_RC! neq 0 (
-        call :log "ERRO: falha ao instalar WSL (rc=!WSL_RC!)."
+        call :log "ERRO: falha ao instalar WSL rc=!WSL_RC!"
         echo [ERRO] Falha ao instalar WSL. Instale: wsl --install
-        del "%LOCKFILE%" >nul 2>&1
-        call :pause_helper
-        exit /b 1
+        set "_DIE_RC=1"
+        set "_FATAL=1"
     )
-    call :log "WSL instalado. Pode ser necessario reiniciar."
-    echo       WSL instalado. REINICIE o Windows e rode o instalador novamente.
-    del "%LOCKFILE%" >nul 2>&1
-    call :pause_helper
-    exit /b 1
+    if not "!_FATAL!"=="1" (
+        call :log "WSL instalado. Pode ser necessario reiniciar."
+        echo       WSL instalado. REINICIE o Windows e rode o instalador novamente.
+        set "_DIE_RC=1"
+        set "_FATAL=1"
+    )
 )
+if "!_FATAL!"=="1" goto :die
 echo       OK.
 echo.
 
@@ -187,7 +211,7 @@ if %errorlevel% equ 0 (
                 echo       wget instalado.
             ) else if exist "C:\Program Files\GnuWin32\bin\wget.exe" (
                 set "WGET=C:\Program Files\GnuWin32\bin\wget.exe"
-                call :log "wget instalado (GnuWin32)."
+                call :log "wget instalado GnuWin32"
                 echo       wget instalado.
             )
         ) else (
@@ -197,7 +221,7 @@ if %errorlevel% equ 0 (
     )
     if not defined WGET (
         call :log "wget indisponivel; usando Invoke-WebRequest como fallback."
-        echo       wget indisponivel. Download usara PowerShell (sem progresso).
+        echo       wget indisponivel. Download usara PowerShell sem progresso.
     )
 )
 echo.
@@ -261,12 +285,12 @@ if exist "%TARBALL%" (
     if !errorlevel! neq 0 (
         call :log "ERRO: falha no download do Alpine."
         echo [ERRO] Falha ao baixar Alpine. Verifique sua conexao.
-        del "%LOCKFILE%" >nul 2>&1
-        call :pause_helper
-        exit /b 1
+        set "_DIE_RC=1"
+        set "_FATAL=1"
     )
-    echo       Download concluido.
+    if not "!_FATAL!"=="1" echo       Download concluido.
 )
+if "!_FATAL!"=="1" goto :die
 echo.
 
 :: [6] Import Alpine (sempre fresh)
@@ -283,20 +307,20 @@ echo       Importando Alpine fresh...
 set "XEMONITOR_TARBALL=%TARBALL%"
 call :runwsl import_alpine 300 import_alpine
 if !WSL_RC! neq 0 (
-    call :log "ERRO: falha ao importar Alpine (rc=!WSL_RC!)."
+    call :log "ERRO: falha ao importar Alpine rc=!WSL_RC!"
     echo [ERRO] Nao foi possivel importar Alpine.
-    del "%LOCKFILE%" >nul 2>&1
-    call :pause_helper
-    exit /b 1
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 call :runwsl alpine_ok2 60 distro_ok
 if !WSL_RC! neq 0 (
     call :log "ERRO: Alpine indisponivel apos import."
     echo [ERRO] Alpine indisponivel apos import.
-    del "%LOCKFILE%" >nul 2>&1
-    call :pause_helper
-    exit /b 1
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 set "DISTRO=Alpine"
 call :runwsl set_default 60 set_default
 call :log "Distro WSL: %DISTRO%"
@@ -314,7 +338,8 @@ echo.
 
 :: [1] Gerar script de deps via echo
 set "DEPS_SH=%TEMP%\xemonitor-setup-deps.sh"
-call :log "Gerando %DEPS_SH%..."
+if "%TEMP%"=="" set "DEPS_SH=%USERPROFILE%\AppData\Local\Temp\xemonitor-setup-deps.sh"
+call :log "Gerando %DEPS_SH% (TEMP=%TEMP%)..."
 > "%DEPS_SH%" echo #!/bin/sh
 >> "%DEPS_SH%" echo set -e
 >> "%DEPS_SH%" echo echo '[deps] Instalando openrc, kmod, eudev...'
@@ -330,31 +355,40 @@ call :log "Gerando %DEPS_SH%..."
 echo       Script gerado: %DEPS_SH%
 
 :: [2] Copiar ao Alpine
+call :log "TRACE: antes to_wsl_path. DEPS_SH='%DEPS_SH%'"
 call :to_wsl_path "%DEPS_SH%" DEPS_WSL
+if "!DEPS_WSL!"=="" (
+    call :log "ERRO: to_wsl_path falhou para %DEPS_SH%."
+    echo [ERRO] Falha ao converter caminho para WSL.
+    set "_DIE_RC=1"
+    set "_FATAL=1"
+)
+if "!_FATAL!"=="1" goto :die
 set "XEMONITOR_SRC=!DEPS_WSL!"
 set "XEMONITOR_DEST=/tmp/xemonitor-setup-deps.sh"
 call :runwsl copy_deps 30 copy_file
 if !WSL_RC! neq 0 (
-    call :log "ERRO: falha ao copiar deps script (rc=!WSL_RC!)."
+    call :log "ERRO: falha ao copiar deps script rc=!WSL_RC!"
     echo [ERRO] Falha ao copiar script para Alpine.
-    del "%LOCKFILE%" >nul 2>&1
-    call :pause_helper
-    exit /b 1
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 
 :: [3] Executar
 call :runwsl exec_deps 120 run_script
 if !WSL_RC! neq 0 (
-    call :log "ERRO: deps script falhou (rc=!WSL_RC!)."
+    call :log "ERRO: deps script falhou rc=!WSL_RC!"
     echo [ERRO] Falha ao instalar dependencias no Alpine.
-    del "%LOCKFILE%" >nul 2>&1
-    call :pause_helper
-    exit /b 1
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 echo       Dependencias Alpine instaladas: openrc, kmod, eudev.
 echo.
 call :log "=== FASE 2 concluida ==="
 
+echo TRACE-PHASE3-ENTRY
 :: ============================================================
 :: FASE 3/4: Copia de Arquivos + Config Alpine
 :: ============================================================
@@ -367,15 +401,20 @@ echo.
 echo [1/4] Copiando bridge para Alpine...
 if exist "%APP_DIR%\bridge" (
     call :to_wsl_path "%APP_DIR%\bridge" BRIDGE_WSL
+    if "!BRIDGE_WSL!"=="" (
+        call :log "AVISO: to_wsl_path falhou para bridge."
+        echo [AVISO] Falha ao converter caminho do bridge.
+    ) else (
     set "XEMONITOR_SRC=!BRIDGE_WSL!"
     set "XEMONITOR_DEST=/usr/local/bin/xemonitor-bridge"
     call :runwsl copy_bridge 30 copy_file
     if !WSL_RC! neq 0 (
-        call :log "AVISO: falha ao copiar bridge (rc=!WSL_RC!)."
+        call :log "AVISO: falha ao copiar bridge rc=!WSL_RC!"
         echo [AVISO] Falha ao copiar bridge.
     ) else (
         call :log "Bridge copiado."
         echo       bridge copiado.
+    )
     )
 ) else (
     call :log "AVISO: bridge nao encontrado em %APP_DIR%."
@@ -386,15 +425,20 @@ if exist "%APP_DIR%\bridge" (
 echo [2/4] Copiando init script OpenRC...
 if exist "%APP_DIR%\openrc\xemonitor-bridge" (
     call :to_wsl_path "%APP_DIR%\openrc\xemonitor-bridge" O_WSL
+    if "!O_WSL!"=="" (
+        call :log "AVISO: to_wsl_path falhou para init script."
+        echo [AVISO] Falha ao converter caminho do init script.
+    ) else (
     set "XEMONITOR_SRC=!O_WSL!"
     set "XEMONITOR_DEST=/etc/init.d/xemonitor-bridge"
     call :runwsl copy_openrc 30 copy_file
     if !WSL_RC! neq 0 (
-        call :log "AVISO: falha ao copiar init script (rc=!WSL_RC!)."
+        call :log "AVISO: falha ao copiar init script rc=!WSL_RC!"
         echo [AVISO] Falha ao copiar init script OpenRC.
     ) else (
         call :log "Init script OpenRC copiado."
         echo       init script copiado.
+    )
     )
 ) else (
     call :log "AVISO: openrc/xemonitor-bridge nao encontrado."
@@ -403,14 +447,17 @@ if exist "%APP_DIR%\openrc\xemonitor-bridge" (
 :: [3] Copiar systemd unit (fallback Arch/systemd)
 if exist "%APP_DIR%\systemd\xemonitor-bridge.service" (
     call :to_wsl_path "%APP_DIR%\systemd\xemonitor-bridge.service" S_WSL
-    set "XEMONITOR_SRC=!S_WSL!"
-    set "XEMONITOR_DEST=/etc/systemd/system/xemonitor-bridge.service"
-    call :runwsl copy_systemd 30 copy_file
+    if not "!S_WSL!"=="" (
+        set "XEMONITOR_SRC=!S_WSL!"
+        set "XEMONITOR_DEST=/etc/systemd/system/xemonitor-bridge.service"
+        call :runwsl copy_systemd 30 copy_file
+    )
 )
 
 :: [4] Gerar script de config + executar
 echo [3/4] Gerando script de configuracao Alpine...
 set "CFG_SH=%TEMP%\xemonitor-setup-config.sh"
+if "%TEMP%"=="" set "CFG_SH=%USERPROFILE%\AppData\Local\Temp\xemonitor-setup-config.sh"
 > "%CFG_SH%" echo #!/bin/sh
 >> "%CFG_SH%" echo set -e
 >> "%CFG_SH%" echo echo '[config] Criando regra udev CH340...'
@@ -428,26 +475,33 @@ set "CFG_SH=%TEMP%\xemonitor-setup-config.sh"
 >> "%CFG_SH%" echo echo '[config] OK: configuracao do Alpine concluida.'
 
 call :to_wsl_path "%CFG_SH%" CFG_WSL
+if "!CFG_WSL!"=="" (
+    call :log "ERRO: to_wsl_path falhou para config script."
+    echo [ERRO] Falha ao converter caminho do script de configuracao.
+    set "_DIE_RC=1"
+    set "_FATAL=1"
+)
+if "!_FATAL!"=="1" goto :die
 set "XEMONITOR_SRC=!CFG_WSL!"
 set "XEMONITOR_DEST=/tmp/xemonitor-setup-config.sh"
 call :runwsl copy_config 30 copy_file
 if !WSL_RC! neq 0 (
     call :log "ERRO: falha ao copiar config script."
     echo [ERRO] Falha ao copiar script de configuracao.
-    del "%LOCKFILE%" >nul 2>&1
-    call :pause_helper
-    exit /b 1
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 
 echo [4/4] Executando configuracao Alpine...
 call :runwsl exec_config 60 run_script
 if !WSL_RC! neq 0 (
-    call :log "ERRO: config script falhou (rc=!WSL_RC!)."
+    call :log "ERRO: config script falhou rc=!WSL_RC!"
     echo [ERRO] Falha ao configurar Alpine.
-    del "%LOCKFILE%" >nul 2>&1
-    call :pause_helper
-    exit /b 1
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 echo       Alpine configurado: udev + wsl.conf + modulos.
 echo.
 call :log "=== FASE 3 concluida ==="
@@ -485,7 +539,7 @@ echo [2b] Gravando config do GUI...
 set "CFG_DIR=%APPDATA%\xemonitor"
 set "CFG_FILE=%CFG_DIR%\xemonitor-gui.conf"
 if /i "%MODE%"=="repair" (
-    echo       [Reparo] Resetando config (backup em .bak).
+    echo       [Reparo] Resetando config - backup em .bak.
     if exist "%CFG_FILE%" (
         copy /y "%CFG_FILE%" "%CFG_FILE%.bak" >nul 2>&1
         del "%CFG_FILE%" >nul 2>&1
@@ -548,7 +602,7 @@ if !WSL_RC! equ 0 (
 
 :: [6] Resumo
 echo ==========================================
-echo  Instalacao v0.7.1 concluida!
+echo  Instalacao v0.7.2 concluida!
 echo.
 echo   Instalado em:   %INSTALL_DIR%
 echo   Distro WSL:     %DISTRO% (Alpine/OpenRC)
@@ -567,6 +621,15 @@ call :pause_helper
 exit /b 0
 
 :: ============================================================
+:: :die — cleanup + exit (goto-safe, never inside ( ... ) block)
+:: ============================================================
+:die
+del "%LOCKFILE%" >nul 2>&1
+call :pause_helper
+if not defined _DIE_RC set "_DIE_RC=1"
+exit /b %_DIE_RC%
+
+:: ============================================================
 :: :runwsl <label> <timeout_s> <task>
 :: Roda comando wsl via wsl_timeout.ps1 (timeout + kill + log).
 :: Define WSL_RC. Usa XEMONITOR_DISTRO/SRC/DEST/TARBALL.
@@ -574,6 +637,16 @@ exit /b 0
 :runwsl
 set "WSL_RC=1"
 set "XEMONITOR_DISTRO=%DISTRO%"
+set "_rwl_skip=0"
+if /i "%3"=="copy_file" if "!XEMONITOR_SRC!"=="" (
+    call :log "ERRO runwsl %1: XEMONITOR_SRC vazio."
+    set "_rwl_skip=1"
+)
+if /i "%3"=="run_script" if "!XEMONITOR_SRC!"=="" (
+    call :log "ERRO runwsl %1: XEMONITOR_SRC vazio - run_script"
+    set "_rwl_skip=1"
+)
+if "%_rwl_skip%"=="1" exit /b 0
 call :log "wsl %1 (%2s) ..."
 powershell -NoProfile -ExecutionPolicy Bypass -File "%APP_DIR%\scripts\wsl_timeout.ps1" -Timeout %2 -Task %3
 set "WSL_RC=!errorlevel!"
@@ -594,9 +667,8 @@ exit /b 0
 :: :log - append de mensagem no LOGFILE
 :: ============================================================
 :log
-if defined LOGFILE (
-    echo %date% %time%  %*>>"%LOGFILE%"
-)
+if not defined LOGFILE exit /b 0
+echo %date% %time%  %*>>"%LOGFILE%"
 exit /b 0
 
 :: ============================================================
@@ -655,5 +727,17 @@ exit /b 0
 :: ============================================================
 :to_wsl_path
 set "%~2="
-for /f "delims=" %%p in ('powershell -NoProfile -Command "$p='%~1'; $p=$p -replace '\\','/'; $d=$p.Substring(0,1).ToLower(); $rest=$p.Substring(3); Write-Output ('/mnt/'+$d+'/'+$rest)"') do set "%~2=%%p"
+set "_twp_rc=0"
+call :log "TRACE: to_wsl_path(%~1)"
+if "%~1"=="" (
+    call :log "ERRO to_wsl_path: caminho vazio."
+    set "_twp_rc=1"
+)
+if "%_twp_rc%"=="1" exit /b 1
+for /f "delims=" %%p in ('powershell -NoProfile -Command "$p='%~1'; if(-not $p){Write-Output '';exit 1}; $p=$p -replace '\\','/'; $d=$p.Substring(0,1).ToLower(); $rest=$p.Substring(3); Write-Output ('/mnt/'+$d+'/'+$rest)" 2^>nul') do set "%~2=%%p"
+if "%~2"=="" (
+    call :log "ERRO to_wsl_path: falha ao converter '%~1'."
+    set "_twp_rc=1"
+)
+if "%_twp_rc%"=="1" exit /b 1
 exit /b 0

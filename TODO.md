@@ -4,30 +4,29 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
 
 ---
 
-## v0.6.0 — Instalação robusta: módulo ch341 + modo Reparo (2026-08-16)
+## v0.7.2 — Erros silenciados do bridge agora propagam (2026-08-17)
 
-> Scan físico com a versão instalada **validado** (injeção ponta a ponta). Esta rodada
-> automatiza as intervenções que fizeram o sistema funcionar e blinda o instalador.
-> Release v0.6.0 só após revalidar a instalação (decisão do usuário).
+> Logs reais do usuário mostraram o problema: bridge inicializou às 18:44,
+> morreu às 18:45 (`EndOfStream`), e o cliente ficou **12h em loop
+> `TCP connect failed`** sem que a tarefa `XeMonitor-Bridge` religasse o
+> serviço. `bridge-task.log` inexistente confirmou: a tarefa não subiu o
+> serviço, e o instalador mentiu "Bridge iniciado". v0.7.2 faz todos esses
+> erros silenciados virarem `_FATAL`.
 
-### Intervenções que fizeram funcionar (a automatizar)
-1. `resolveBridgeCtl` fallbacks `../scripts` + `../../scripts` (dev) — já feito (`src/gui.zig:386`)
-2. **GUI não-elevado** via tarefa `XeMonitor-App` `/RL LIMITED` (elevado = freeze + UIPI bloqueia SendInput)
-3. Reattach CH340 manual: `usbipd attach --wsl=Alpine -b 4-5` (a tarefa `XeMonitor-USB-Attach` falhou silenciosamente)
-4. **`modprobe ch341`** — módulo NÃO auto-carrega no Alpine; sem ele `/dev/ttyUSB0` não aparece
-5. `bridge_ctl restart` após o attach
+### Pendente (aplicar no clone Linux)
+- [ ] **F1**: `copy_bridge`/`copy_openrc` no `install_windows.bat` viram `_FATAL` em vez de `AVISO`
+- [ ] **F2**: `svc_enable` checar exit code (hoje `call :runwsl` sem `if !WSL_RC!`)
+- [ ] **F3**+: tarefa `svc_status` no `wsl_timeout.ps1` — valida `rc-service status` + `ss -tln | grep :9000`
+- [ ] **F4**: `svc_enable` (`wsl_timeout.ps1`) propagar erro real se `rc-service` falta ou bridge não sobe
+- [ ] **F5**: `bridge_ctl.bat :rc_start` validar porta 9000 ouvindo após `rc-service start`
+- [ ] **F6**: checar exit code dos `schtasks /Create` no `install_windows.bat`
+- [x] **Bump 0.7.2**: `xemonitor.rc`, `build.zig.zon`, `xemonitor.iss`, `install_windows.bat`
+- [x] **CHANGELOG.md**: entrada v0.7.2
+- [x] **`.gitattributes`**: normalização LF
 
-### Plano
-- [ ] **setup_wsl.sh**: boot cmd do wsl.conf → `modprobe usbip-core && modprobe vhci-hcd && modprobe ch341`; `lsmod | grep ch341` ao final
-- [ ] **setup_usb.bat**: pós-attach → verificar/`modprobe ch341` → poll `/dev/ttyUSB0` (15s) → log em `%APPDATA%\xemonitor\setup-usb-task.log` → exit code ≠0 em falha
-- [ ] **bridge_ctl.bat**: ação `ch341` = `modprobe ch341 && test -c /dev/ttyUSB0`
-- [ ] **install_windows.bat**: detectar instalação existente → `[R]eparo/[N]ova/cancelar` (`/silent`=auto-reparo); reparo idempotente (kill+recopy+setup_wsl+tasks+usb+bridge+GUI via tarefa); backup+reset do `xemonitor-gui.conf`; lockfile single-instance; validar `%DISTRO%` no passo 4; PID no log
-- [ ] **xemonitor.iss**: `[Run]` do GUI → `schtasks /Run /TN XeMonitor-App` (nunca exe direto do instalador elevado)
-- [ ] **gui.zig repairWorker**: passo `bridge_ctl ch341` antes do poll
-- [ ] **diagnose_windows.bat**: `check_ch341` no `--check` e `--fix`
-- [ ] Investigar falha silenciosa da tarefa `XeMonitor-USB-Attach` (log + exit code + retry)
-- [ ] Bump v0.6.0 (`.rc`/`.iss`/`build.zig.zon`) + rebuild ReleaseSafe + ISCC + validação
-- [ ] Docs (.checkpoint.md, AGENTS.md, CHANGELOG.md) + commit + tag `v0.6.0` + `gh release`
+### Pendente
+- [ ] Validação completa via VM Windows (dockur/windows no CachyOS)
+- [ ] Commit + tag `v0.7.2` + `gh release`
 
 ---
 

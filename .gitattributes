@@ -1,0 +1,14 @@
+# Normalize line endings to LF in the repo, regardless of OS.
+# Git stores LF; checkout uses LF on Linux/macOS, CRLF on Windows (via autocrlf=true).
+* text=auto
+
+# Binary files — never normalize
+*.png binary
+*.ico binary
+*.dll binary
+*.exe binary
+*.pdb binary
+*.pdf binary
+*.zip binary
+*.gz  binary
+*.tar binary

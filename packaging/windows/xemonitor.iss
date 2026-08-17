@@ -12,7 +12,7 @@
 ;   iscc packaging\windows\xemonitor.iss
 ; ============================================================
 #define MyAppName "XeMonitor"
-#define MyAppVersion "0.7.1"
+#define MyAppVersion "0.7.2"
 #define MyAppPublisher "XeMonitor"
 #define MyAppExeName "xemonitor-gui.exe"
 
@@ -102,24 +102,27 @@ const
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
-  UninstallerPath: String;
+  RawPath: String;
   UninstallKey: String;
 begin
   Result := '';
   UninstallKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + APP_ID + '_is1';
+  RawPath := '';
 
-  // Matar processos xemonitor que possam impedir a desinstalacao
-  Exec('taskkill', '/F /IM xemonitor-gui.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Exec('taskkill', '/F /IM xemonitor.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Buscar caminho do desinstalador antigo no registro (HKLM ou HKCU)
+  if not RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', RawPath) then
+    RegQueryStringValue(HKCU, UninstallKey, 'UninstallString', RawPath);
 
-  // Buscar caminho do desinstalador antigo no registro
-  if RegQueryStringValue(HKLM, UninstallKey, 'UninstallString', UninstallerPath) then
+  if RawPath <> '' then
   begin
-    UninstallerPath := ExpandConstant(UninstallerPath);
-    if FileExists(UninstallerPath) then
-    begin
-      // Desinstalar versao existente silenciosamente
-      Exec(UninstallerPath, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    end;
+    // Remover aspas ao redor
+    if Copy(RawPath, 1, 1) = '"' then
+      RawPath := Copy(RawPath, 2, Length(RawPath) - 2);
+    // Extrair somente o caminho do .exe (remover parametros extras)
+    if Pos('.exe', LowerCase(RawPath)) > 0 then
+      RawPath := Copy(RawPath, 1, Pos('.exe', LowerCase(RawPath)) + 3);
+
+    if FileExists(RawPath) then
+      Exec(RawPath, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

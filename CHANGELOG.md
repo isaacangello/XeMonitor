@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-08-17
+
+### Fixed
+- **Instalador: erros silenciados do bridge agora propagam** — `copy_bridge`,
+  `copy_openrc` e `svc_enable` no `install_windows.bat` viram `_FATAL` em vez
+  de `AVISO` (antes, a Fase 3 "concluía" sem bridge ou init script e a
+  Fase 4 mentia "Bridge iniciado"). Diagnostico comprovado pelos logs reais
+  do usuário: `bridge-task.log` nunca existiu, cliente ficou 12h em loop
+  `TCP connect failed: error.Unexpected`, bridge nunca subiu.
+- **`svc_enable` (`wsl_timeout.ps1`) propaga erro real** — removido o
+  `2>/dev/null || true` silenciador; se `rc-service` não existe (Fase 2
+  falhou默默) ou `rc-service start` falha, retorna erro 201.
+- **`bridge_ctl.bat :rc_start` valida porta 9000 ouvindo** — após
+  `rc-service start`, roda `ss -tln | grep :9000` para confirmar que o
+  daemon realmente subiu (não só que o OpenRC reportou `started`).
+- **`install_windows.bat :runwsl` checa `XEMONITOR_SRC` vazio** — evita
+  `cp "" /usr/local/bin/...` silencioso quando `to_wsl_path` falha.
+
+### Added
+- **`wsl_timeout.ps1` tarefa `svc_status`** — verifica `rc-service status`
+  + `ss -tln | grep :9000` após `svc_enable`; usado pelo `install_windows.bat`
+  pós-Fase 4 passo 1 para confirmar que o bridge está realmente ouvindo.
+- **`.gitattributes`** — `* text=auto` + binários explícitos (`*.png`,
+  `*.ico`, `*.exe`, etc.). Normaliza line endings para LF no repo;
+  resolve diferenças CRLF (partição Windows) vs LF (clone Linux).
+
+### Changed
+- **Auto-elevação: `fltmc` no lugar de `net session`** — `net session`
+  falha quando `LanmanServer` está parado mesmo em admin. `fltmc`
+  (Filter Manager) é confiável em qualquer estado de serviços Windows.
+- **Lockfile mata processo ativo** — antes, lockfile presente abortava
+  o instalador ("Outra instancia parece estar em execucao"). Agora
+  mata o processo PID dono do lock (se ativo) e segue; limpa locks
+  órfãos automaticamente.
+- **Padrão `:die` centralizado** — substitui `del lockfile; pause; exit /b 1`
+  espalhado por 5+ pontos. `if !_FATAL!==1 goto :die` é goto-safe (nunca
+  dentro de blocos `( )`), garante cleanup consistente.
+- **Inno Setup `PrepareToInstall` robusto** — trata aspas no path do
+  desinstalador, extrai só o `.exe` (remove params extras), fallback
+  HKCU depois de HKLM.
+
 ## [0.7.1] — 2026-08-17
 
 ### Changed
