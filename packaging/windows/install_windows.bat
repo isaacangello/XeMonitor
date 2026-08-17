@@ -402,39 +402,50 @@ echo [1/4] Copiando bridge para Alpine...
 if exist "%APP_DIR%\bridge" (
     call :to_wsl_path "%APP_DIR%\bridge" BRIDGE_WSL
     if "!BRIDGE_WSL!"=="" (
-        call :log "AVISO: to_wsl_path falhou para bridge."
-        echo [AVISO] Falha ao converter caminho do bridge.
+        call :log "ERRO: to_wsl_path falhou para bridge."
+        echo [ERRO] Falha ao converter caminho do bridge.
+        set "_DIE_RC=1"
+        set "_FATAL=1"
     ) else (
     set "XEMONITOR_SRC=!BRIDGE_WSL!"
     set "XEMONITOR_DEST=/usr/local/bin/xemonitor-bridge"
     call :runwsl copy_bridge 30 copy_file
     if !WSL_RC! neq 0 (
-        call :log "AVISO: falha ao copiar bridge rc=!WSL_RC!"
-        echo [AVISO] Falha ao copiar bridge.
+        call :log "ERRO: falha ao copiar bridge rc=!WSL_RC!"
+        echo [ERRO] Falha ao copiar bridge - bridge nao podera rodar.
+        set "_DIE_RC=1"
+        set "_FATAL=1"
     ) else (
         call :log "Bridge copiado."
         echo       bridge copiado.
     )
     )
 ) else (
-    call :log "AVISO: bridge nao encontrado em %APP_DIR%."
-    echo [AVISO] bridge nao encontrado.
+    call :log "ERRO: bridge nao encontrado em %APP_DIR%."
+    echo [ERRO] bridge nao encontrado em %APP_DIR% - falta build do bridge.
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 
 :: [2] Copiar init script OpenRC
 echo [2/4] Copiando init script OpenRC...
 if exist "%APP_DIR%\openrc\xemonitor-bridge" (
     call :to_wsl_path "%APP_DIR%\openrc\xemonitor-bridge" O_WSL
     if "!O_WSL!"=="" (
-        call :log "AVISO: to_wsl_path falhou para init script."
-        echo [AVISO] Falha ao converter caminho do init script.
+        call :log "ERRO: to_wsl_path falhou para init script."
+        echo [ERRO] Falha ao converter caminho do init script.
+        set "_DIE_RC=1"
+        set "_FATAL=1"
     ) else (
     set "XEMONITOR_SRC=!O_WSL!"
     set "XEMONITOR_DEST=/etc/init.d/xemonitor-bridge"
     call :runwsl copy_openrc 30 copy_file
     if !WSL_RC! neq 0 (
-        call :log "AVISO: falha ao copiar init script rc=!WSL_RC!"
-        echo [AVISO] Falha ao copiar init script OpenRC.
+        call :log "ERRO: falha ao copiar init script rc=!WSL_RC!"
+        echo [ERRO] Falha ao copiar init script OpenRC - servico nao podera iniciar.
+        set "_DIE_RC=1"
+        set "_FATAL=1"
     ) else (
         call :log "Init script OpenRC copiado."
         echo       init script copiado.
@@ -442,7 +453,9 @@ if exist "%APP_DIR%\openrc\xemonitor-bridge" (
     )
 ) else (
     call :log "AVISO: openrc/xemonitor-bridge nao encontrado."
+    echo [AVISO] openrc/xemonitor-bridge nao encontrado - bridge nao tera init script.
 )
+if "!_FATAL!"=="1" goto :die
 
 :: [3] Copiar systemd unit (fallback Arch/systemd)
 if exist "%APP_DIR%\systemd\xemonitor-bridge.service" (
@@ -517,8 +530,26 @@ echo.
 :: [1] Bridge service
 echo [1/6] Iniciando bridge no WSL...
 call :runwsl svc_enable 120 svc_enable
-call :log "Bridge habilitado/iniciado no %DISTRO%."
-echo       Bridge iniciado.
+if !WSL_RC! neq 0 (
+    call :log "ERRO: svc_enable falhou rc=!WSL_RC! - bridge nao subiu."
+    echo [ERRO] Falha ao iniciar o servico do bridge no Alpine.
+    echo        Verifique se o OpenRC e o init script estao corretos.
+    set "_DIE_RC=1"
+    set "_FATAL=1"
+)
+if "!_FATAL!"=="1" goto :die
+:: Verificacao real: rc-service status + porta 9000 ouvindo
+call :runwsl svc_verify 30 svc_status
+if !WSL_RC! neq 0 (
+    call :log "ERRO: svc_status rc=!WSL_RC! - bridge nao esta listening na 9000."
+    echo [ERRO] Bridge subiu mas a porta 9000 nao esta ouvindo.
+    echo        Diagnostico: wsl -d %DISTRO% -u root -- rc-service xemonitor-bridge status
+    set "_DIE_RC=1"
+    set "_FATAL=1"
+)
+if "!_FATAL!"=="1" goto :die
+call :log "Bridge habilitado/iniciado no %DISTRO% e ouvindo na 9000."
+echo       Bridge iniciado e porta 9000 ouvindo.
 echo.
 
 :: [2] Binarios Windows
@@ -552,14 +583,40 @@ echo.
 echo [3/6] Criando tarefas agendadas...
 if exist "%APP_DIR%\scripts\install_autostart.bat" (
     call "%APP_DIR%\scripts\install_autostart.bat" /silent
-    call :log "Tarefas criadas via install_autostart.bat."
-    echo       Tarefas criadas: USB-Attach, Bridge, App.
+    if !errorlevel! neq 0 (
+        call :log "ERRO: install_autostart.bat falhou rc=!errorlevel!"
+        echo [ERRO] Falha ao criar tarefas agendadas.
+        set "_DIE_RC=1"
+        set "_FATAL=1"
+    ) else (
+        call :log "Tarefas criadas via install_autostart.bat."
+        echo       Tarefas criadas: USB-Attach, Bridge, App.
+    )
 ) else (
     schtasks /Create /F /TN "XeMonitor-USB-Attach" /TR "\"%INSTALL_DIR%\setup_usb.bat\" /silent" /SC ONLOGON /RL HIGHEST >nul 2>&1
+    if !errorlevel! neq 0 (
+        call :log "ERRO: schtasks XeMonitor-USB-Attach falhou rc=!errorlevel!"
+        set "_FATAL=1"
+    )
     schtasks /Create /F /TN "XeMonitor-Bridge" /TR "cmd /c \"\"%INSTALL_DIR%\packaging\windows\start_bridge.cmd\"\"" /SC ONLOGON /DELAY 0000:30 >nul 2>&1
+    if !errorlevel! neq 0 (
+        call :log "ERRO: schtasks XeMonitor-Bridge falhou rc=!errorlevel!"
+        set "_FATAL=1"
+    )
     schtasks /Create /F /TN "XeMonitor-App" /TR "\"%INSTALL_DIR%\xemonitor-gui.exe\"" /SC ONLOGON /DELAY 0000:45 /RL LIMITED >nul 2>&1
-    call :log "Tarefas criadas via schtasks."
+    if !errorlevel! neq 0 (
+        call :log "ERRO: schtasks XeMonitor-App falhou rc=!errorlevel!"
+        set "_FATAL=1"
+    )
+    if "!_FATAL!"=="1" (
+        echo [ERRO] Falha ao criar uma ou mais tarefas agendadas.
+        set "_DIE_RC=1"
+    ) else (
+        call :log "Tarefas criadas via schtasks."
+        echo       Tarefas criadas: USB-Attach, Bridge, App.
+    )
 )
+if "!_FATAL!"=="1" goto :die
 echo.
 
 :: [4] USB attach

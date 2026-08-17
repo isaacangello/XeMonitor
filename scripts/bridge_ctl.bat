@@ -52,6 +52,15 @@ exit /b !errorlevel!
 
 :rc_start
 %RUN% rc-service xemonitor-bridge start
+if !errorlevel! neq 0 exit /b !errorlevel!
+:: Validacao real: porta 9000 ouvindo (rc-service start pode reportar OK
+:: mas o daemon morre logo em seguida - bug visto no install do usuario).
+%RUN% sh -c "sleep 1 && ss -tln 2>/dev/null | grep -q ':9000'"
+if !errorlevel! neq 0 (
+    echo [bridge_ctl] ERRO: rc-service start OK mas porta 9000 nao ouvindo.
+    echo                Verifique: wsl -d Alpine -u root -- rc-service xemonitor-bridge status
+    echo                Log do bridge: wsl -d Alpine -- cat /var/log/xemonitor-bridge.log 2^>/dev/null
+)
 exit /b !errorlevel!
 
 :rc_stop
@@ -60,6 +69,12 @@ exit /b !errorlevel!
 
 :rc_restart
 %RUN% rc-service xemonitor-bridge restart
+if !errorlevel! neq 0 exit /b !errorlevel!
+:: Mesma validacao do :rc_start
+%RUN% sh -c "sleep 1 && ss -tln 2>/dev/null | grep -q ':9000'"
+if !errorlevel! neq 0 (
+    echo [bridge_ctl] ERRO: rc-service restart OK mas porta 9000 nao ouvindo.
+)
 exit /b !errorlevel!
 
 :rc_enable

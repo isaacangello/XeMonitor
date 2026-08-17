@@ -60,17 +60,51 @@ switch ($Task) {
     }
     "run_script"    { $argLine = "-d $distro -u root -- sh `"$src`"" }
     "svc_enable"    {
+        # Propaga erro: se rc-service nao existe (openrc nao instalado) ou
+        # rc-service start falha, retorna erro 201. Nao silencia mais com
+        # `2>/dev/null || true` — diagnosticar falha real e crucial para o
+        # instalador. Validacao final: porta 9000 deve estar ouvindo.
         $script = @'
+set -e
 if command -v rc-service >/dev/null 2>&1; then
-  mkdir -p /run/openrc 2>/dev/null
-  touch /run/openrc/softlevel 2>/dev/null
-  rc-update add xemonitor-bridge default 2>/dev/null || true
-  rc-service xemonitor-bridge start 2>/dev/null || true
-else
-  systemctl daemon-reload 2>/dev/null || true
-  systemctl enable xemonitor-bridge 2>/dev/null || true
-  systemctl restart xemonitor-bridge 2>/dev/null || true
+  mkdir -p /run/openrc
+  touch /run/openrc/softlevel
+  rc-update add xemonitor-bridge default || true
+  rc-service xemonitor-bridge start || {
+    echo "ERRO: rc-service xemonitor-bridge start falhou"
+    rc-service xemonitor-bridge status 2>&1 || true
+    exit 1
+  }
+  # Validar porta 9000 ouvindo (bridge binario pode ter crashado)
+  sleep 1
+  if ! ss -tln 2>/dev/null | grep -q ':9000'; then
+    echo "ERRO: bridge nao esta ouvindo na porta 9000 apos start"
+    rc-service xemonitor-bridge status 2>&1 || true
+    pgrep -fa xemonitor-bridge 2>&1 || echo "bridge nao encontrado no ps"
+    exit 1
+  fi
+  echo "OK: bridge iniciado e porta 9000 ouvindo"
+  exit 0
 fi
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl daemon-reload || true
+  systemctl enable xemonitor-bridge || true
+  systemctl restart xemonitor-bridge || {
+    echo "ERRO: systemctl restart xemonitor-bridge falhou"
+    systemctl status xemonitor-bridge --no-pager 2>&1 || true
+    exit 1
+  }
+  sleep 1
+  if ! ss -tln 2>/dev/null | grep -q ':9000'; then
+    echo "ERRO: bridge nao esta ouvindo na porta 9000 apos restart"
+    systemctl status xemonitor-bridge --no-pager 2>&1 || true
+    exit 1
+  fi
+  echo "OK: bridge iniciado e porta 9000 ouvindo"
+  exit 0
+fi
+echo "ERRO: nem OpenRC nem systemd disponiveis - Fase 2 falhou?"
+exit 1
 '@
         $argLine = "-d $distro -u root -- sh -c `"$script`""
     }
@@ -83,6 +117,45 @@ if command -v rc-service >/dev/null 2>&1; then
 else
   systemctl start xemonitor-bridge 2>/dev/null || true
 fi
+'@
+        $argLine = "-d $distro -u root -- sh -c `"$script`""
+    }
+    "svc_status"    {
+        # Verifica status real do bridge: rc-service status + porta 9000 ouvindo.
+        # usado pelo install_windows.bat pós-svc_enable para confirmar que o
+        # daemon realmente subiu (diagnostico do bug 'rc-service start == OK
+        # mas daemon morre logo em seguida').
+        $script = @'
+if command -v rc-service >/dev/null 2>&1; then
+  rc-service xemonitor-bridge status || {
+    echo "ERRO: rc-service status != started"
+    exit 1
+  }
+  if ! pgrep -f xemonitor-bridge >/dev/null 2>&1; then
+    echo "ERRO: rc-service status OK mas processo nao encontrado no ps"
+    exit 1
+  fi
+  if ! ss -tln 2>/dev/null | grep -q ':9000'; then
+    echo "ERRO: processo vivo mas porta 9000 nao ouvindo"
+    exit 1
+  fi
+  echo "OK: rc-service=started processo=ativo porta=9000"
+  exit 0
+fi
+if command -v systemctl >/dev/null 2>&1; then
+  systemctl is-active --quiet xemonitor-bridge || {
+    echo "ERRO: systemctl is-active != active"
+    exit 1
+  }
+  if ! ss -tln 2>/dev/null | grep -q ':9000'; then
+    echo "ERRO: active mas porta 9000 nao ouvindo"
+    exit 1
+  fi
+  echo "OK: systemctl=active porta=9000"
+  exit 0
+fi
+echo "ERRO: nem OpenRC nem systemd disponiveis"
+exit 1
 '@
         $argLine = "-d $distro -u root -- sh -c `"$script`""
     }
