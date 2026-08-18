@@ -1,0 +1,45 @@
+# COMANDOS PARA HABILITAR WSL2 NO WINDOWS 10 LTSC (VM)
+# Execute no PowerShell como ADMINISTRADOR
+
+# 1. VERIFICAR SE FEATURES JÁ ESTÃO HABILITADAS
+Get-WindowsOptionalFeature -Online | Where-Object {$_.FeatureName -match "Linux|VirtualMachine"} | Format-Table -AutoSize
+
+# 2. HABILITAR WSL + VIRTUAL MACHINE PLATFORM
+Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart
+Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart
+
+# 3. REINICIAR A VM (OBRIGATÓRIO)
+Restart-Computer -Force
+
+# ===== APÓS REINICIAR (login xemonitor/xemonitor) =====
+
+# 4. SETAR WSL2 COMO DEFAULT E BAIXAR KERNEL
+wsl --set-default-version 2
+wsl --update
+
+# 5. CONFIRMAR FUNCIONANDO
+wsl --status
+wsl --list --online
+
+
+Pressione qualquer tecla para continuar. . .
+      WSL presente.
+      OK.
+
+[2/6] Verificando winget...
+      usbipd presente.
+
+[5/6] Baixando Alpine minirootfs...
+      Tarball ja existe: alpine-minirootfs-3.21.3-x86_64.tar.gz
+
+[6/6] Preparando Alpine (fresh)...
+      Alpine pronto (fresh).
+
+==========================================
+ FASE 2/4: Dependencias Alpine
+==========================================
+
+      Script gerado: C:\Users\XEMONI~1\AppData\Local\Temp\xemonitor-setup-deps.sh
+[ERRO] Falha ao criar uma ou mais tarefas agendadas.
+Pressione qualquer tecla para continuar. . .
+": XEMONITOR_SRC vazio - run_script" foi inesperado neste momento.
