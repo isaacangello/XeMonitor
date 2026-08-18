@@ -179,8 +179,19 @@ if %errorlevel% equ 0 (
     echo       winget presente.
 ) else (
     call :log "winget nao encontrado via PATH."
-    echo       [AVISO] winget nao encontrado. wget e usbipd podem falhar.
-    echo               Instale o App Installer do Microsoft Store.
+    echo       [AVISO] winget nao encontrado. Tentando instalar App Installer...
+    :: Tentar instalar App Installer (winget) via PowerShell
+    powershell -NoProfile -Command "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe" >nul 2>&1
+    timeout /t 3 /nobreak >nul 2>&1
+    where winget >nul 2>&1
+    if %errorlevel% equ 0 (
+        set "HAS_WINGET=1"
+        call :log "winget instalado com sucesso via App Installer."
+        echo       winget instalado.
+    ) else (
+        call :log "AVISO: falha ao instalar winget. wget/usbipd usarao fallbacks."
+        echo       [AVISO] winget nao instalado. wget/usbipd usarao fallbacks.
+    )
 )
 echo.
 
@@ -216,7 +227,33 @@ if %errorlevel% equ 0 (
             )
         ) else (
             call :log "AVISO: falha ao instalar wget via winget."
-            echo       [AVISO] Falha ao instalar wget. Download usara PowerShell.
+            echo       [AVISO] Falha ao instalar wget via winget. Tentando Chocolatey...
+        )
+    )
+    if not defined WGET (
+        :: Tentar instalar via Chocolatey se disponivel
+        where choco >nul 2>&1
+        if %errorlevel% equ 0 (
+            echo       Instalando wget via Chocolatey...
+            call :log "Instalando wget via Chocolatey..."
+            choco install wget -y >nul 2>&1
+            if !errorlevel! equ 0 (
+                where wget >nul 2>&1
+                if !errorlevel! equ 0 set "WGET=wget"
+            )
+        )
+    )
+    if not defined WGET (
+        :: Tentar instalar via Scoop se disponivel
+        where scoop >nul 2>&1
+        if %errorlevel% equ 0 (
+            echo       Instalando wget via Scoop...
+            call :log "Instalando wget via Scoop..."
+            scoop install wget >nul 2>&1
+            if !errorlevel! equ 0 (
+                where wget >nul 2>&1
+                if !errorlevel! equ 0 set "WGET=wget"
+            )
         )
     )
     if not defined WGET (
@@ -260,13 +297,17 @@ echo.
 :: [5] Download Alpine minirootfs
 echo [5/6] Baixando Alpine minirootfs...
 set "ALPINE_BASE=https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64"
-set "ALPINE_FILE=alpine-minirootfs-3.21.3-x86_64.tar.gz"
 set "TARBALL=%TEMP%\alpine-minirootfs.tar.gz"
 
-:: Resolve versao mais recente via PowerShell (uma linha)
-if !HAS_WINGET! equ 1 (
-    for /f "delims=" %%f in ('powershell -NoProfile -Command "try { $y = (Invoke-WebRequest -UseBasicParsing -Uri '%ALPINE_BASE%/latest-releases.yaml' -TimeoutSec 30).Content; if ($y -match 'file: (alpine-minirootfs-[\d.]+-x86_64\.tar\.gz)') { $Matches[1] } else { '%ALPINE_FILE%' } } catch { '%ALPINE_FILE%' }" 2^>nul') do set "ALPINE_FILE=%%f"
+:: Resolve versao mais recente via PowerShell (sem fallback hardcoded)
+for /f "delims=" %%f in ('powershell -NoProfile -Command "try { $y = (Invoke-WebRequest -UseBasicParsing -Uri '%ALPINE_BASE%/latest-releases.yaml' -TimeoutSec 30).Content; if ($y -match 'file: (alpine-minirootfs-[\d.]+-x86_64\.tar\.gz)') { $Matches[1] } else { exit 1 } } catch { exit 1 }" 2^>nul') do set "ALPINE_FILE=%%f"
+if not defined ALPINE_FILE (
+    call :log "ERRO: falha ao resolver versao latest do Alpine."
+    echo [ERRO] Nao foi possivel obter versao latest do Alpine.
+    set "_DIE_RC=1"
+    set "_FATAL=1"
 )
+if "!_FATAL!"=="1" goto :die
 set "ALPINE_URL=%ALPINE_BASE%/%ALPINE_FILE%"
 call :log "Alpine URL: %ALPINE_URL%"
 
@@ -375,7 +416,8 @@ if !WSL_RC! neq 0 (
 )
 if "!_FATAL!"=="1" goto :die
 
-:: [3] Executar
+:: [3] Executar - XEMONITOR_SRC deve ser o caminho DENTRO do Alpine
+set "XEMONITOR_SRC=/tmp/xemonitor-setup-deps.sh"
 call :runwsl exec_deps 120 run_script
 if !WSL_RC! neq 0 (
     call :log "ERRO: deps script falhou rc=!WSL_RC!"
@@ -507,6 +549,7 @@ if !WSL_RC! neq 0 (
 if "!_FATAL!"=="1" goto :die
 
 echo [4/4] Executando configuracao Alpine...
+set "XEMONITOR_SRC=/tmp/xemonitor-setup-config.sh"
 call :runwsl exec_config 60 run_script
 if !WSL_RC! neq 0 (
     call :log "ERRO: config script falhou rc=!WSL_RC!"
