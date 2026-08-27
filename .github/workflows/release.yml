@@ -95,15 +95,15 @@ jobs:
         shell: pwsh
 
       - name: Build xemonitor (x86_64-windows)
-        run: & "zig\zig-0.16.0\zig.exe" build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+        run: '& "zig\zig-0.16.0\zig.exe" build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe'
         shell: pwsh
 
       - name: Build GUI (x86_64-windows)
-        run: & "zig\zig-0.16.0\zig.exe" build gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+        run: '& "zig\zig-0.16.0\zig.exe" build gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe'
         shell: pwsh
 
       - name: Build bridge (x86_64-linux-musl)
-        run: & "zig\zig-0.16.0\zig.exe" build bridge -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
+        run: '& "zig\zig-0.16.0\zig.exe" build bridge -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe'
         shell: pwsh
 
       - name: Copy Windows binaries to dist
