@@ -28,6 +28,13 @@ fn sleepMs(ms: u64) void {
     _ = std.os.linux.nanosleep(&req, null);
 }
 
+fn getCurrentPid() std.posix.pid_t {
+    return if (comptime os == .windows)
+        @intCast(std.os.windows.GetCurrentProcessId())
+    else
+        std.os.linux.getpid();
+}
+
 fn readPidFile(io: std.Io) ?u32 {
     var buf: [32]u8 = undefined;
     const data = gui_cfg_dir.dir.readFile(io, GUI_PID_FILE, &buf) catch return null;
@@ -37,7 +44,7 @@ fn readPidFile(io: std.Io) ?u32 {
 
 fn pidAlive(pid: u32) bool {
     if (os != .linux) return false;
-    const r = std.posix.kill(@intCast(pid), @enumFromInt(0));
+    const r = std.posix.kill(@as(std.posix.pid_t, @intCast(pid)), @enumFromInt(0));
     return !std.meta.isError(r);
 }
 
@@ -45,10 +52,7 @@ fn writePidFile(io: std.Io) void {
     var f = gui_cfg_dir.dir.createFile(io, GUI_PID_FILE, .{}) catch return;
     defer f.close(io);
     var buf: [32]u8 = undefined;
-    const pid: u32 = if (os == .windows)
-        @intCast(std.os.windows.GetCurrentProcessId())
-    else
-        @intCast(std.posix.getpid());
+    const pid: u32 = @intCast(getCurrentPid());
     const s = std.fmt.bufPrint(&buf, "{d}\n", .{pid}) catch return;
     var wbuf: [32]u8 = undefined;
     var w = f.writer(io, &wbuf);
@@ -68,9 +72,9 @@ fn enforceSingleInstance(io: std.Io, replace: bool) void {
             if (replace) {
                 if (os == .linux) {
                     std.debug.print("xemonitor-gui: substituindo instancia antiga (PID {d})\n", .{old_pid});
-                    _ = std.posix.kill(@intCast(old_pid), std.posix.SIG.TERM) catch {};
+                    _ = std.posix.kill(@as(std.posix.pid_t, @intCast(old_pid)), std.posix.SIG.TERM) catch {};
                     sleepMs(500);
-                    _ = std.posix.kill(@intCast(old_pid), std.posix.SIG.KILL) catch {};
+                    _ = std.posix.kill(@as(std.posix.pid_t, @intCast(old_pid)), std.posix.SIG.KILL) catch {};
                     sleepMs(200);
                 }
             } else {
@@ -253,9 +257,9 @@ const ManagedProc = struct {
         if (comptime os != .windows) {
             const pid = self.child_pid.load(.seq_cst);
             if (pid != 0) {
-                _ = std.posix.kill(pid, .TERM) catch {};
+                _ = std.posix.kill(@as(std.posix.pid_t, @intCast(pid)), .TERM) catch {};
                 std.Io.sleep(io, std.Io.Duration.fromMilliseconds(500), .awake) catch {};
-                _ = std.posix.kill(pid, .KILL) catch {};
+                _ = std.posix.kill(@as(std.posix.pid_t, @intCast(pid)), .KILL) catch {};
             }
         }
         self.mutex.lock(io) catch {};

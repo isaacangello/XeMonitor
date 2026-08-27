@@ -372,7 +372,7 @@ const CLIENT_PID_FILE = paths.CLIENT_PID_FILE;
 
 fn pidAlive(pid: u32) bool {
     if (builtin.os.tag != .linux) return false;
-    const r = std.posix.kill(@intCast(pid), @enumFromInt(0));
+    const r = std.posix.kill(@as(std.posix.pid_t, @intCast(pid)), @enumFromInt(0));
     return !std.meta.isError(r);
 }
 
