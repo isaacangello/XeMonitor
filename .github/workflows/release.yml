@@ -44,6 +44,10 @@ jobs:
       - name: Build GUI (x86_64-linux-gnu, SDL3 de fonte + dbus do sistema)
         run: zig build gui -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseSafe
 
+      - name: Validate install.sh (check-only)
+        run: |
+          bash install.sh --check-only
+
       - name: Package release tarball
         run: |
           mkdir -p dist
@@ -53,7 +57,7 @@ jobs:
           cp uninstall.sh dist/xemonitor-uninstall
           chmod +x dist/xemonitor-uninstall
           # Ícone do app (hicolor 512x512; renomeado sem espaço p/ o tar)
-          cp "Barcode Scanner.png" dist/xemonitor.png
+          cp "src/Barcode Scanner.png" dist/xemonitor.png
           mkdir -p dist/openrc dist/systemd dist/scripts
           cp openrc/xemonitor-bridge dist/openrc/xemonitor-bridge
           cp systemd/xemonitor-bridge.service dist/systemd/xemonitor-bridge.service
@@ -61,10 +65,81 @@ jobs:
           tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall xemonitor.png openrc systemd scripts
           sha256sum xemonitor-linux-x86_64.tar.gz | tee xemonitor-linux-x86_64.tar.gz.sha256
 
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-binaries
+          path: |
+            xemonitor-linux-x86_64.tar.gz
+            xemonitor-linux-x86_64.tar.gz.sha256
+
+  build-windows:
+    name: Build Windows binaries + Installer
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        run: |
+          $zigVersion = "0.16.0"
+          $zigUrl = "https://ziglang.org/download/$zigVersion/zig-x86_64-windows-$zigVersion.zip"
+          Invoke-WebRequest -Uri $zigUrl -OutFile zig.zip
+          Expand-Archive zig.zip -DestinationPath zig
+          echo "zig\zig-$zigVersion" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "zig\zig-$zigVersion\zig.exe" version
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build xemonitor (x86_64-windows)
+        run: zig build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+      - name: Build GUI (x86_64-windows)
+        run: zig build gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+
+      - name: Build bridge (x86_64-linux-musl)
+        run: zig build bridge -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe
+
+      - name: Copy Windows binaries to dist
+        run: |
+          mkdir -p dist
+          Copy-Item zig-out\bin\xemonitor.exe dist\xemonitor.exe
+          Copy-Item zig-out\bin\xemonitor-gui.exe dist\xemonitor-gui.exe
+
+      - name: Compile Inno Setup Installer
+        run: |
+          $issc = "C:\Program Files\Inno Setup 6\ISCC.exe"
+          & $issc packaging\windows\xemonitor.iss
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist\XeMonitor-*-setup.exe
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download Linux artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-binaries
+          path: linux-artifacts
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: windows-artifacts
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            xemonitor-linux-x86_64.tar.gz
-            xemonitor-linux-x86_64.tar.gz.sha256
+            linux-artifacts/xemonitor-linux-x86_64.tar.gz
+            linux-artifacts/xemonitor-linux-x86_64.tar.gz.sha256
+            windows-artifacts/XeMonitor-*-setup.exe
           generate_release_notes: true
