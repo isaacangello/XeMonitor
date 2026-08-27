@@ -12,22 +12,37 @@
 #   - OpenRC   (Alpine WSL...)          -> /etc/init.d/xemonitor-bridge
 #
 # Opcoes:
-#   --prefix <dir>   prefixo de instalacao (padrao: /usr/local)
-#   --no-service     nao instala/inicia o servico (so binarios + udev)
-#   --help           mostra esta ajuda
+#   --prefix <dir>       prefixo de instalacao (padrao: /usr/local)
+#   --no-service         nao instala/inicia o servico (so binarios + udev)
+#   --check-only         valida requisitos sem instalar (exit 0 se OK, 1 se faltar)
+#   --dry-run            simula instalacao mostrando passos sem executar sudo
+#   --validate           roda validacao pos-install (padrao: ON)
+#   --no-validate        desliga validacao pos-install
+#   --quiet              output minimo (so erros/avisos)
+#   --verbose            output debug (comandos executados)
+#   --version|-V         mostra a versao do instalador e sai
+#   --help               mostra esta ajuda
 #
 # Variaveis uteis (para testes/avancado):
-#   XEMONITOR_VERSION    tag do release (padrao: latest)
-#   XEMONITOR_BASE_URL   URL base de download (padrao: github releases)
+#   XEMONITOR_VERSION       tag do release (padrao: latest)
+#   XEMONITOR_BASE_URL      URL base de download (padrao: github releases)
+#   XEMONITOR_CURL_TIMEOUT  timeout do curl em segundos (padrao: 30)
+#   XEMONITOR_CURL_RETRY    numero de tentativas do curl (padrao: 3)
+#   XEMONITOR_CURL_RETRY_DELAY  delay entre tentativas em segundos (padrao: 2)
 
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
-INSTALL_VERSION="1.2.2"
+INSTALL_VERSION="1.3.0"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
 SERVICE=1
+CHECK_ONLY=0
+DRY_RUN=0
+VALIDATE=1
+QUIET=0
+VERBOSE=0
 REAL_USER="${SUDO_USER:-${USER:-}}"
 
 usage() {
@@ -47,14 +62,23 @@ O desinstalador tambem e instalado: /usr/local/bin/xemonitor-uninstall
   (use 'xemonitor-uninstall --purge' para remover config + logs).
 
 Opcoes:
-  --prefix <dir>   prefixo de instalacao (padrao: /usr/local)
-  --no-service     nao instala/inicia o servico (so binarios + udev)
-  --version|-V     mostra a versao do instalador e sai
-  --help           mostra esta ajuda
+  --prefix <dir>       prefixo de instalacao (padrao: /usr/local)
+  --no-service         nao instala/inicia o servico (so binarios + udev)
+  --check-only         valida requisitos sem instalar (exit 0 se OK, 1 se faltar)
+  --dry-run            simula instalacao mostrando passos sem executar sudo
+  --validate           roda validacao pos-install (padrao: ON)
+  --no-validate        desliga validacao pos-install
+  --quiet              output minimo (so erros/avisos)
+  --verbose            output debug (comandos executados)
+  --version|-V         mostra a versao do instalador e sai
+  --help               mostra esta ajuda
 
 Variaveis uteis (para testes/avancado):
-  XEMONITOR_VERSION    tag do release (padrao: latest)
-  XEMONITOR_BASE_URL   URL base de download (padrao: github releases)
+  XEMONITOR_VERSION            tag do release (padrao: latest)
+  XEMONITOR_BASE_URL           URL base de download (padrao: github releases)
+  XEMONITOR_CURL_TIMEOUT       timeout do curl em segundos (padrao: 30)
+  XEMONITOR_CURL_RETRY         numero de tentativas do curl (padrao: 3)
+  XEMONITOR_CURL_RETRY_DELAY   delay entre tentativas em segundos (padrao: 2)
 HELP
 }
 
@@ -62,45 +86,60 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --prefix) PREFIX="${2:-/usr/local}"; shift 2 ;;
         --no-service) SERVICE=0; shift ;;
+        --check-only) CHECK_ONLY=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --validate) VALIDATE=1; shift ;;
+        --no-validate) VALIDATE=0; shift ;;
+        --quiet) QUIET=1; shift ;;
+        --verbose) VERBOSE=1; shift ;;
         --version|-V) printf 'XeMonitor installer %s\n' "$INSTALL_VERSION"; exit 0 ;;
         --help|-h) usage; exit 0 ;;
         *) shift ;;
     esac
 done
 
-BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/${VERSION}/download}"
-[ "$VERSION" = "latest" ] && BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-
-# ---------- 0. cores do terminal ----------
-COLORS_LIB_URL="https://raw.githubusercontent.com/isaacangello/bash_colors_lib/refs/heads/main/bash_colors_lib.sh"
-
-# baixa e ativa a biblioteca de cores (opcional: sem rede => mensagens sem cor)
-load_colors() {
-    command -v curl >/dev/null 2>&1 || return 1
-    curl -fsSL --max-time 8 "$COLORS_LIB_URL" -o "$TMP/bash_colors_lib.sh" 2>/dev/null || return 1
-    # shellcheck source=/dev/null
-    source "$TMP/bash_colors_lib.sh"
-}
-
-if load_colors; then
-    C_GREEN="$(printf '%b' "${green:-}")"
-    C_YELLOW="$(printf '%b' "${yellow:-}")"
-    C_RED="$(printf '%b' "${red:-}")"
-    C_BLUE="$(printf '%b' "${blue:-}")"
-    C_CIANO="$(printf '%b' "${ciano:-}")"
-    C_NC="$(printf '%b' "${NC:-}")"
+# ---------- Cores embutidas (ANSI) ----------
+if [ -t 1 ] && [ "$QUIET" -eq 0 ]; then
+    C_GREEN="\033[32m"
+    C_YELLOW="\033[33m"
+    C_RED="\033[31m"
+    C_BLUE="\033[34m"
+    C_CIANO="\033[36m"
+    C_NC="\033[0m"
 else
     C_GREEN=""; C_YELLOW=""; C_RED=""; C_BLUE=""; C_CIANO=""; C_NC=""
 fi
 
-log()  { printf "${C_GREEN}[install]${C_NC} %s\n" "$*"; }
+log()  { [ "$QUIET" -eq 0 ] && printf "${C_GREEN}[install]${C_NC} %s\n" "$*"; }
 warn() { printf "${C_YELLOW}[aviso]${C_NC} %s\n" "$*"; }
 die()  { printf "${C_RED}[erro]${C_NC} %s\n" "$*" >&2; exit 1; }
+debug() { [ "$VERBOSE" -eq 1 ] && printf "${C_BLUE}[debug]${C_NC} %s\n" "$*"; }
 
-# avisa (sem abortar) se existir uma versao mais nova deste instalador no repo
+# ---------- curl com retry/timeout configuravel ----------
+CURL_TIMEOUT="${XEMONITOR_CURL_TIMEOUT:-30}"
+CURL_RETRY="${XEMONITOR_CURL_RETRY:-3}"
+CURL_RETRY_DELAY="${XEMONITOR_CURL_RETRY_DELAY:-2}"
+
+curl_fetch() {
+    local url="$1" output="$2"
+    debug "curl_fetch: $url -> $output (timeout=${CURL_TIMEOUT}s retry=${CURL_RETRY} delay=${CURL_RETRY_DELAY}s)"
+    curl -fsSL --max-time "$CURL_TIMEOUT" --retry "$CURL_RETRY" --retry-delay "$CURL_RETRY_DELAY" "$url" -o "$output"
+}
+
+# ---------- sudo wrapper ----------
+sudo_run() {
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] sudo $*"
+        return 0
+    fi
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+# ---------- check_update (opcional, nao bloqueante) ----------
 check_update() {
     command -v curl >/dev/null 2>&1 || return 0
     local remote
@@ -116,40 +155,70 @@ check_update() {
     return 0
 }
 
-# roda um comando com privilegios (sudo quando nao for root); sem re-exec
-sudo_run() {
-    if [ "$(id -u)" -eq 0 ]; then
-        "$@"
-    else
-        sudo "$@"
+# ---------- Validacao de requisitos ----------
+check_requirements() {
+    local missing=0
+
+    [ "$(uname -m)" = "x86_64" ] || { warn "arquitetura $(uname -m) nao suportada (apenas x86_64)"; missing=1; }
+
+    if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
+        warn "sudo nao encontrado e nao e root"; missing=1
     fi
+
+    command -v curl >/dev/null 2>&1 || { warn "curl nao encontrado"; missing=1; }
+    command -v tar >/dev/null 2>&1 || { warn "tar nao encontrado"; missing=1; }
+    command -v sha256sum >/dev/null 2>&1 || { warn "sha256sum nao encontrado"; missing=1; }
+
+    if [ "$missing" -eq 1 ]; then
+        return 1
+    fi
+    return 0
 }
 
-# ---------- 1. requisitos ----------
-[ "$(uname -m)" = "x86_64" ] || die "suporte apenas a arquitetura x86_64 por enquanto."
-
-if [ "$(id -u)" -ne 0 ] && ! command -v sudo >/dev/null 2>&1; then
-    die "rode como root ou instale sudo."
-fi
-
-command -v curl >/dev/null 2>&1 || die "curl nao encontrado. Instale-o (pacman -S curl / apt install curl / apk add curl)."
-
+# ---------- 1. Requisitos basicos ----------
+log "verificando requisitos..."
+check_requirements || die "requisitos basicos nao atendidos."
 check_update || true
 
-# ---------- 2. detectar init ----------
+# ---------- 2. Detectar init ----------
 INIT="none"
 if [ -d /run/systemd/system ] || command -v systemctl >/dev/null 2>&1; then
     INIT="systemd"
 elif [ -f /etc/openrc ] || command -v rc-service >/dev/null 2>&1; then
     INIT="openrc"
 fi
+log "init detectado: ${INIT}"
 
-# ---------- 3. baixar binarios ----------
+if [ "$CHECK_ONLY" -eq 1 ]; then
+    log "check-only: OK (requisitos atendidos, init=${INIT})"
+    exit 0
+fi
+
+# ---------- 3. Baixar binarios + SHA256 ----------
+BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/${VERSION}/download}"
+[ "$VERSION" = "latest" ] && BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
 log "baixando ${TARBALL} (v${VERSION})..."
-curl -fsSL "${BASE_URL}/${TARBALL}" -o "${TMP}/${TARBALL}" || die "falha no download de ${BASE_URL}/${TARBALL}"
+curl_fetch "${BASE_URL}/${TARBALL}" "${TMP}/${TARBALL}" || die "falha no download de ${BASE_URL}/${TARBALL}"
+
+log "baixando ${TARBALL}.sha256..."
+if curl_fetch "${BASE_URL}/${TARBALL}.sha256" "${TMP}/${TARBALL}.sha256" 2>/dev/null; then
+    log "verificando SHA256..."
+    (cd "$TMP" && sha256sum -c "${TARBALL}.sha256") || die "SHA256 nao confere! Arquivo corrompido ou adulterado."
+    log "SHA256 OK."
+else
+    warn "arquivo .sha256 nao encontrado no release; pulando verificacao de integridade."
+fi
+
+log "extraindo..."
 tar -xzf "${TMP}/${TARBALL}" -C "$TMP" || die "falha ao extrair o tarball (arquivo corrompido?)."
 
+# ---------- 4. Instalar binarios ----------
 BIN_DIR="${PREFIX}/bin"
+log "instalando binarios em ${BIN_DIR}/..."
 sudo_run mkdir -p "$BIN_DIR"
 sudo_run install -m 0755 "$TMP/xemonitor"      "$BIN_DIR/xemonitor"
 sudo_run install -m 0755 "$TMP/xemonitor-bridge" "$BIN_DIR/xemonitor-bridge"
@@ -158,11 +227,9 @@ if [ -f "$TMP/xemonitor-gui" ]; then
     sudo_run install -m 0755 "$TMP/xemonitor-gui" "$BIN_DIR/xemonitor-gui"
     GUI_INSTALLED=1
 fi
-log "binarios instalados em ${BIN_DIR}/ (xemonitor, xemonitor-bridge${GUI_INSTALLED:+, xemonitor-gui})"
-GUI_SUMMARY=""
-[ "$GUI_INSTALLED" = "1" ] && GUI_SUMMARY="  ${C_BLUE}GUI:${C_NC}     ${BIN_DIR}/xemonitor-gui (bandeja; inicia no login)"
+log "binarios instalados: xemonitor, xemonitor-bridge${GUI_INSTALLED:+, xemonitor-gui}"
 
-# desinstalador vem no release; o instalador grava no sistema p/ uso local
+# Desinstalador
 if [ -f "$TMP/xemonitor-uninstall" ]; then
     sudo_run install -m 0755 "$TMP/xemonitor-uninstall" "$BIN_DIR/xemonitor-uninstall"
     log "desinstalador instalado em ${BIN_DIR}/xemonitor-uninstall"
@@ -173,15 +240,15 @@ fi
 sudo_run mkdir -p "${PREFIX}/share/xemonitor"
 printf '%s\n' "$VERSION" | sudo_run tee "${PREFIX}/share/xemonitor/VERSION" > /dev/null
 
-# ---------- 4. regras udev (CH340 + uinput) ----------
+# ---------- 5. Regras udev ----------
 UDEV_CH340='SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666"'
 UDEV_UINPUT='KERNEL=="uinput", GROUP="input", MODE="0660"'
 if [ -d /etc/udev/rules.d ]; then
+    log "instalando regras udev..."
     printf '%s\n' "$UDEV_CH340" | sudo_run tee /etc/udev/rules.d/99-ch340.rules > /dev/null
     log "regra udev do CH340 instalada (99-ch340.rules)."
     printf '%s\n' "$UDEV_UINPUT" | sudo_run tee /etc/udev/rules.d/99-xemonitor-uinput.rules > /dev/null
     log "regra udev do uinput instalada (99-xemonitor-uinput.rules)."
-    # garante o modulo uinput no boot (injetor nativo)
     printf '%s\n' 'uinput' | sudo_run tee /etc/modules-load.d/xemonitor-uinput.conf > /dev/null
     sudo_run modprobe uinput 2>/dev/null || true
     if command -v udevadm >/dev/null 2>&1; then
@@ -189,18 +256,16 @@ if [ -d /etc/udev/rules.d ]; then
         sudo_run udevadm trigger || true
     fi
 else
-    warn "diretorio /etc/udev/rules.d nao encontrado; pule as regras udev."
+    warn "diretorio /etc/udev/rules.d nao encontrado; pulando regras udev."
 fi
 
-# ---------- 4b. icone do app (hicolor) ----------
-# PNG 512x512 (release) ou SVG fallback (Tabler barcode) no hicolor/apps.
+# ---------- 6. Icone hicolor ----------
 ICON_DIR="${PREFIX}/share/icons/hicolor/scalable/apps"
 sudo_run mkdir -p "$ICON_DIR"
 if [ -f "$TMP/xemonitor.png" ]; then
-    # icone novo (cores vivas, fundo transparente) em hicolor 512x512
     sudo_run mkdir -p "${PREFIX}/share/icons/hicolor/512x512/apps"
     sudo_run install -m 0644 "$TMP/xemonitor.png" "${PREFIX}/share/icons/hicolor/512x512/apps/xemonitor.png"
-    log "icone instalado em ${PREFIX}/share/icons/hicolor/512x512/apps/xemonitor.png"
+    log "icone PNG instalado (512x512)."
 else
     cat > "$TMP/xemonitor.svg" <<'SVGEOF'
 <!-- XeMonitor app icon (Tabler barcode, MIT) -->
@@ -216,15 +281,14 @@ else
 </svg>
 SVGEOF
     sudo_run install -m 0644 "$TMP/xemonitor.svg" "${ICON_DIR}/xemonitor.svg"
-    log "icone instalado em ${ICON_DIR}/xemonitor.svg"
+    log "icone SVG instalado (fallback Tabler)."
 fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
     sudo_run gtk-update-icon-cache -f "${PREFIX}/share/icons/hicolor" >/dev/null 2>&1 || true
 fi
 
-# ---------- 4c. desktop entry + autostart + pasta central de config ----------
+# ---------- 7. Desktop entry + autostart + config central ----------
 if [ "$GUI_INSTALLED" = "1" ]; then
-    # .desktop do app (menu/taskbar + icone da janela no Wayland)
     cat > "$TMP/xemonitor.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -237,20 +301,20 @@ Categories=Utility;
 EOF
     sudo_run install -d "${PREFIX}/share/applications"
     sudo_run install -m 0644 "$TMP/xemonitor.desktop" "${PREFIX}/share/applications/xemonitor.desktop"
-    log "desktop entry instalado (${PREFIX}/share/applications/xemonitor.desktop)."
+    log "desktop entry instalado."
 
     if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
         USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
         [ -n "$USER_HOME" ] || USER_HOME="$HOME"
 
-        # autostart no login: GUI + cliente (o bridge ja e servico de sistema)
+        # Autostart
         AUTOSTART_DIR="$USER_HOME/.config/autostart"
         sudo_run mkdir -p "$AUTOSTART_DIR"
         sudo_run install -m 0644 "$TMP/xemonitor.desktop" "$AUTOSTART_DIR/xemonitor.desktop"
         sudo_run chown -R "$REAL_USER" "$USER_HOME/.config/autostart" 2>/dev/null || true
-        log "autostart instalado ($AUTOSTART_DIR/xemonitor.desktop) — GUI inicia no login."
+        log "autostart instalado ($AUTOSTART_DIR/xemonitor.desktop)."
 
-        # pasta central de config/log do usuario + config padrao (auto_start)
+        # Config central
         CFG_DIR_USER="$USER_HOME/.config/xemonitor"
         sudo_run mkdir -p "$CFG_DIR_USER"
         if [ ! -f "$CFG_DIR_USER/xemonitor-gui.conf" ]; then
@@ -267,11 +331,10 @@ EOF
             sudo_run install -m 0644 "$TMP/xemonitor-gui.conf" "$CFG_DIR_USER/xemonitor-gui.conf"
         fi
         sudo_run chown -R "$REAL_USER" "$CFG_DIR_USER" 2>/dev/null || true
-        log "config central em ${CFG_DIR_USER}/ (xemonitor-gui.conf, log e pids)."
+        log "config central em ${CFG_DIR_USER}/."
     fi
 
-    # unit systemd de usuario (alternativa ao autostart; NAO habilitada por
-    # padrao para nao iniciar o GUI duas vezes no login)
+    # systemd user unit (opcional, nao habilitada por padrao)
     if [ "$INIT" = "systemd" ]; then
         cat > "$TMP/xemonitor-gui.service" <<EOF
 [Unit]
@@ -295,29 +358,25 @@ EOF
     fi
 fi
 
-# ---------- 4d. dependencias de runtime do GUI (Debian/Ubuntu) ----------
-# xemonitor-gui linka libdbus-1.so.3 e libsystemd.so.0; em instalacoes
-# minimas libdbus-1-3 pode faltar. Best-effort: instala via apt quando possivel.
+# ---------- 8. Dependencias runtime GUI (Debian/Ubuntu) ----------
 if [ "$GUI_INSTALLED" = "1" ] && command -v apt-get >/dev/null 2>&1; then
     log "instalando dependencias de runtime do GUI (libdbus-1-3 libsystemd0)..."
+    sudo_run apt-get update >/dev/null 2>&1 || true
     sudo_run apt-get install -y --no-install-recommends libdbus-1-3 libsystemd0 >/dev/null 2>&1 ||
         warn "nao foi possivel instalar via apt (manual: apt-get install libdbus-1-3 libsystemd0)."
 fi
 
-# ---------- 5. grupos de acesso serial ----------
+# ---------- 9. Grupos de acesso serial ----------
 if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
-    # uucp/dialout: acesso serial; input: acesso ao /dev/uinput (injetor nativo)
-    # cria o grupo 'input' se faltar (Debian/Ubuntu minimal sem udev nao o tem)
     sudo_run getent group input >/dev/null 2>&1 || sudo_run groupadd input 2>/dev/null || true
     sudo_run usermod -aG uucp,dialout,input "$REAL_USER" || true
     log "usuario '${REAL_USER}' adicionado aos grupos uucp, dialout e input."
     warn "efetivo apenas apos novo login (ou use 'sg uucp -c ...')."
 fi
 
-# ---------- 6. servico do bridge ----------
+# ---------- 10. Servico do bridge ----------
 if [ "$SERVICE" = "1" ]; then
     if [ "$INIT" = "systemd" ]; then
-        # Usa a unit versionada do release quando presente (fallback: gera inline)
         if [ -f "$TMP/systemd/xemonitor-bridge.service" ]; then
             SVC_UNIT="$TMP/systemd/xemonitor-bridge.service"
         else
@@ -339,16 +398,15 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
         fi
+        log "instalando servico systemd..."
         sudo_run install -m 0644 "$SVC_UNIT" /etc/systemd/system/xemonitor-bridge.service
         sudo_run systemctl daemon-reload
         sudo_run systemctl enable xemonitor-bridge >/dev/null 2>&1 || true
         sudo_run systemctl restart xemonitor-bridge 2>/dev/null || sudo_run systemctl start xemonitor-bridge || true
         log "servico systemd 'xemonitor-bridge' instalado e iniciado."
     elif [ "$INIT" = "openrc" ]; then
-        # Usa o init script versionado do release quando presente (fallback: inline)
         if [ -f "$TMP/openrc/xemonitor-bridge" ]; then
             INIT_SCRIPT="$TMP/openrc/xemonitor-bridge"
-            # Substitui o caminho do binario pelo prefixo escolhido (padrao /usr/local)
             sed -i "s|command=\"/usr/local/bin/xemonitor-bridge\"|command=\"${BIN_DIR}/xemonitor-bridge\"|" "$INIT_SCRIPT"
         else
             INIT_SCRIPT="$TMP/xemonitor-bridge.init"
@@ -364,6 +422,7 @@ depend() {
 }
 EOF
         fi
+        log "instalando servico OpenRC..."
         sudo_run install -m 0755 "$INIT_SCRIPT" /etc/init.d/xemonitor-bridge
         sudo_run rc-update add xemonitor-bridge default 2>/dev/null || true
         sudo_run rc-service xemonitor-bridge start || true
@@ -373,19 +432,92 @@ EOF
     fi
 fi
 
-# ---------- 7. dependencia de injecao (cliente) ----------
+# ---------- 11. Validacao pos-install ----------
+if [ "$VALIDATE" -eq 1 ] && [ "$SERVICE" -eq 1 ] && [ "$INIT" != "none" ]; then
+    log "validando instalacao..."
+    VALIDATION_FAILED=0
+
+    # 11a. Servico ativo
+    if [ "$INIT" = "systemd" ]; then
+        if ! systemctl is-active --quiet xemonitor-bridge; then
+            warn "servico systemd 'xemonitor-bridge' nao esta ativo."
+            VALIDATION_FAILED=1
+        else
+            log "servico systemd ativo."
+        fi
+    elif [ "$INIT" = "openrc" ]; then
+        if ! rc-service xemonitor-bridge status 2>/dev/null | grep -q "started"; then
+            warn "servico OpenRC 'xemonitor-bridge' nao esta rodando."
+            VALIDATION_FAILED=1
+        else
+            log "servico OpenRC ativo."
+        fi
+    fi
+
+    # 11b. Porta 9000 escutando
+    if command -v ss >/dev/null 2>&1; then
+        if ! ss -tln 2>/dev/null | grep -q ':9000'; then
+            warn "porta 9000 nao esta escutando (bridge pode nao ter subido completamente)."
+            VALIDATION_FAILED=1
+        else
+            log "porta 9000 OK."
+        fi
+    elif command -v netstat >/dev/null 2>&1; then
+        if ! netstat -tln 2>/dev/null | grep -q ':9000'; then
+            warn "porta 9000 nao esta escutando."
+            VALIDATION_FAILED=1
+        else
+            log "porta 9000 OK."
+        fi
+    else
+        warn "ss/netstat nao disponiveis; pulando check de porta."
+    fi
+
+    # 11c. Teste de injeção fake (stdin)
+    if command -v timeout >/dev/null 2>&1; then
+        log "testando injeção via stdin (fake scan)..."
+        CFG_DIR_USER="${XEMONITOR_CONFIG_DIR:-$USER_HOME/.config/xemonitor}"
+        LOG_FILE="${CFG_DIR_USER}/xemonitor-$(date +%Y-%m-%d).log"
+        [ -f "$LOG_FILE" ] || LOG_FILE="${CFG_DIR_USER}/xemonitor.log"
+
+        # Roda xemonitor --stdin em background, manda fake scan, espera log
+        echo "VALIDATE123" | timeout 5 "${BIN_DIR}/xemonitor" --stdin >/dev/null 2>&1 || true
+        sleep 1
+        if [ -f "$LOG_FILE" ] && grep -q "injected 'VALIDATE123'" "$LOG_FILE" 2>/dev/null; then
+            log "teste de injeção OK."
+        else
+            warn "teste de injeção falhou (verifique log: $LOG_FILE)."
+            VALIDATION_FAILED=1
+        fi
+    else
+        warn "timeout nao disponivel; pulando teste de injeção."
+    fi
+
+    if [ "$VALIDATION_FAILED" -eq 1 ]; then
+        warn "validacao pos-install detectou problemas (veja avisos acima)."
+        warn "use 'xemonitor-uninstall --purge' para remover tudo e tentar novamente."
+    else
+        log "validacao pos-install: TUDO OK."
+    fi
+fi
+
+# ---------- 12. Dependencia de injecao (cliente) ----------
 if [ -n "${WAYLAND_DISPLAY:-}" ]; then
     command -v ydotool >/dev/null 2>&1 || warn "ydotool nao encontrado (fallback Wayland). Instale: pacman -S ydotool / apt install ydotool / apk add ydotool."
 else
     command -v xdotool >/dev/null 2>&1 || warn "xdotool nao encontrado (fallback X11). Instale: pacman -S xdotool / apt install xdotool / apk add xdotool."
 fi
 
-# ---------- 8. resumo ----------
+# ---------- 13. Resumo ----------
 if [ "$SERVICE" = "1" ] && [ "$INIT" != "none" ]; then
     SERVICE_MSG="O servico do bridge ja esta ativo (${INIT}). Escaneie um codigo:"
 else
     SERVICE_MSG="Servico nao instalado (init=${INIT}). Inicie o bridge manualmente:"
 fi
+
+GUI_SUMMARY=""
+[ "$GUI_INSTALLED" = "1" ] && GUI_SUMMARY="  ${C_BLUE}GUI:${C_NC}     ${BIN_DIR}/xemonitor-gui (bandeja; inicia no login)"
+
 cat <<EOF
 
 ${C_CIANO}============================================================${C_NC}
