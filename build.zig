@@ -203,6 +203,8 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    // Suppress "unused local constant" errors from SDL3 C code (dvui dependency)
+    gui.root_module.addCSourceFlags(.{ .flags = &.{ "-Wno-unused-const-variable" } });
     gui.root_module.addAnonymousImport("barcode_png", .{ .root_source_file = b.path("src/Barcode Scanner.png") });
     gui.root_module.addImport("dvui", dvui_dep.module("dvui_sdl3"));
     gui.root_module.addImport("sdl3-backend", dvui_dep.module("sdl3"));
