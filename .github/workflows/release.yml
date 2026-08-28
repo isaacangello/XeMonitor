@@ -129,7 +129,17 @@ jobs:
 
       - name: Compile Inno Setup Installer
         run: |
-          $issc = "C:\Program Files\Inno Setup 6\ISCC.exe"
+          $issc = (Get-Command "ISCC.exe" -ErrorAction SilentlyContinue).Source
+          if (-not $issc) {
+            $issc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $issc)) {
+            $issc = "C:\Program Files\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $issc)) {
+            Write-Error "ISCC.exe not found"
+            exit 1
+          }
           & $issc packaging\windows\xemonitor.iss
         shell: pwsh
 
