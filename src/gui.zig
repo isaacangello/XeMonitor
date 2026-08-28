@@ -28,11 +28,11 @@ fn sleepMs(ms: u64) void {
     _ = std.os.linux.nanosleep(&req, null);
 }
 
-fn getCurrentPid() std.posix.pid_t {
+fn getCurrentPid() u32 {
     return if (comptime os == .windows)
-        @intCast(@intFromPtr(std.os.windows.GetCurrentProcessId()))
+        std.os.windows.GetCurrentProcessId()
     else
-        std.os.linux.getpid();
+        @intCast(std.os.linux.getpid());
 }
 
 fn readPidFile(io: std.Io) ?u32 {
