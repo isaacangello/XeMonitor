@@ -419,6 +419,34 @@ const linux = if (os == .linux) struct {
         }
     }
 
+    fn emitPropertiesChanged() void {
+        const conn = g_conn orelse return;
+        const signal = c.dbus_message_new_signal(
+            item_path,
+            props_iface,
+            "PropertiesChanged",
+        ) orelse return;
+        defer c.dbus_message_unref(signal);
+        var iter: c.DBusMessageIter = undefined;
+        c.dbus_message_iter_init_append(signal, &iter);
+        appendBasic(&iter, c.DBUS_TYPE_STRING, item_iface);
+        var changed: c.DBusMessageIter = undefined;
+        if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "{sv}", &changed) != 0) {
+            var entry: c.DBusMessageIter = undefined;
+            if (c.dbus_message_iter_open_container(&changed, c.DBUS_TYPE_DICT_ENTRY, null, &entry) != 0) {
+                appendBasic(&entry, c.DBUS_TYPE_STRING, @as([*:0]const u8, @ptrCast(@alignCast("IconPixmap".ptr))));
+                appendIconPixmapVariant(&entry);
+                _ = c.dbus_message_iter_close_container(&changed, &entry);
+            }
+            _ = c.dbus_message_iter_close_container(&iter, &changed);
+        }
+        var invalidated: c.DBusMessageIter = undefined;
+        if (c.dbus_message_iter_open_container(&iter, c.DBUS_TYPE_ARRAY, "s", &invalidated) != 0) {
+            _ = c.dbus_message_iter_close_container(&iter, &invalidated);
+        }
+        _ = c.dbus_connection_send(conn, signal, null);
+    }
+
     // Consulta o esquema de cores via xdg-desktop-portal.
     // Retorna true (escuro) em qualquer falha/desconhecido (padrão seguro p/ tema escuro).
     fn queryDarkScheme() bool {
@@ -759,6 +787,7 @@ const linux = if (os == .linux) struct {
     pub fn run(self: *Tray) void {
         g_tray = self;
         redrawIcon();
+        emitPropertiesChanged();
         var err_buf = ErrBuf{};
         const err = err_buf.ptr();
         c.dbus_error_init(err);
@@ -801,6 +830,7 @@ const linux = if (os == .linux) struct {
                 if (dark != g_icon_dark) {
                     g_icon_dark = dark;
                     redrawIcon();
+                    emitPropertiesChanged();
                 }
             }
             _ = c.dbus_connection_read_write_dispatch(conn, 200);
