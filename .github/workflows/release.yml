@@ -91,6 +91,11 @@ jobs:
           & "$($zigDir.FullName)\zig.exe" version
         shell: pwsh
 
+      - name: Setup Zig cache
+        run: |
+          mkdir -p "$env:USERPROFILE\.cache\zig\tmp"
+        shell: pwsh
+
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
         shell: pwsh
