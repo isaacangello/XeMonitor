@@ -113,7 +113,7 @@ jobs:
         shell: pwsh
 
       - name: Build GUI (x86_64-windows)
-        run: '& "$env:ZIG_PATH\zig.exe" build gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe'
+        run: '& "$env:ZIG_PATH\zig.exe" build gui -Dtarget=x86_64-windows -Doptimize=ReleaseFast'
         shell: pwsh
 
       - name: Build bridge (x86_64-linux-musl)
