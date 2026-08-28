@@ -30,7 +30,7 @@ fn sleepMs(ms: u64) void {
 
 fn getCurrentPid() std.posix.pid_t {
     return if (comptime os == .windows)
-        @intCast(std.os.windows.GetCurrentProcessId())
+        @intCast(@intFromPtr(std.os.windows.GetCurrentProcessId()))
     else
         std.os.linux.getpid();
 }
