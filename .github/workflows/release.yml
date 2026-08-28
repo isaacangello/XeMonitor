@@ -86,8 +86,9 @@ jobs:
           $zigUrl = "https://ziglang.org/download/$zigVersion/zig-x86_64-windows-$zigVersion.zip"
           Invoke-WebRequest -Uri $zigUrl -OutFile zig.zip
           Expand-Archive zig.zip -DestinationPath zig
-          echo "zig\zig-$zigVersion" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & "zig\zig-$zigVersion\zig.exe" version
+          $zigDir = Get-ChildItem zig | Where-Object { $_.PSIsContainer } | Select-Object -First 1
+          echo "ZIG_PATH=$($zigDir.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          & "$($zigDir.FullName)\zig.exe" version
         shell: pwsh
 
       - name: Install Inno Setup
@@ -95,15 +96,15 @@ jobs:
         shell: pwsh
 
       - name: Build xemonitor (x86_64-windows)
-        run: '& "zig\zig-0.16.0\zig.exe" build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe'
+        run: '& "$env:ZIG_PATH\zig.exe" build -Dtarget=x86_64-windows -Doptimize=ReleaseSafe'
         shell: pwsh
 
       - name: Build GUI (x86_64-windows)
-        run: '& "zig\zig-0.16.0\zig.exe" build gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe'
+        run: '& "$env:ZIG_PATH\zig.exe" build gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe'
         shell: pwsh
 
       - name: Build bridge (x86_64-linux-musl)
-        run: '& "zig\zig-0.16.0\zig.exe" build bridge -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe'
+        run: '& "$env:ZIG_PATH\zig.exe" build bridge -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe'
         shell: pwsh
 
       - name: Copy Windows binaries to dist
