@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Fixed (install.sh 1.4.2)
+
+- **URL de download por tag — 404** — com a detecção de versão do 1.4.1,
+  `VERSION` passou a carregar o tag real (`v0.8.0`), mas o `BASE_URL` usava
+  o formato inválido `releases/{TAG}/download` (que só funcionava por acaso
+  com `latest`). O download da release falhava com `curl: (22) 404`.
+  Corrigido para o formato real do GitHub: `releases/download/{TAG}/...`.
+  Mantém `releases/latest/download` para o fallback `latest`.
+
+### Fixed (install.sh 1.4.1)
+
+- **Detecção da própria versão** — quando o install rodava com
+  `VERSION=latest` (padrão), ele gravava o literal `latest` em
+  `/usr/local/share/xemonitor/VERSION` (e exibia "Versao: latest" no resumo),
+  então ninguém sabia qual release estava de fato instalada. O install agora
+  consulta a API do GitHub (`releases/latest`) para descobrir o `tag_name`
+  real (ex.: `v0.8.0`) antes de baixar, e grava essa versão concreta no
+  arquivo VERSION e no resumo. Fallback para `latest` se a API falhar.
+- **`ver_newer` tolera sufixo `v`** — versões como `v0.8.0` (formato das
+  tags) não geravam mais erro `[: v0: esperava número inteiro` e comparam
+  corretamente.
+
 ## [0.8.0] — 2026-08-29
 
 ### Added (install.sh 1.4.0)

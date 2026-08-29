@@ -11,6 +11,11 @@
 #   - systemd  (Arch/CachyOS/Debian...) -> xemonitor-bridge.service
 #   - OpenRC   (Alpine WSL...)          -> /etc/init.d/xemonitor-bridge
 #
+# v1.4.2: corrige a URL de download por tag especifica (era
+#          releases/{TAG}/download -> 404; agora releases/download/{TAG}).
+# v1.4.1: resolve versao real da release quando VERSION=latest (API do GitHub)
+#          e grava o tag real (ex.: v0.8.0) em /usr/local/share/xemonitor/VERSION
+#          (antes gravava o literal 'latest'); ver_newer tolera prefixo 'v'.
 # v1.4.0: autodetect de device (/dev/serial/by-id -> ttyUSB* -> ttyACM*),
 # deteccao de sessao grafica, install do injetor (ydotool/xdotool), check de
 # driver kernel, banner destacado de logout, --client-only/--bridge-only,
@@ -40,7 +45,7 @@
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
-INSTALL_VERSION="1.4.0"
+INSTALL_VERSION="1.4.2"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
@@ -59,7 +64,7 @@ YDOTOOL_SESSION="wayland"
 
 usage() {
     cat <<'HELP'
-XeMonitor - instalador Linux (v1.4.0)
+XeMonitor - instalador Linux (v1.4.2)
 
 Uso:
   curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
@@ -211,17 +216,37 @@ check_update() {
 }
 
 # ---------- Comparador de versoes (semver: X.Y.Z) ----------
-# Retorna 0 se v1 > v2.
+# Retorna 0 se v1 > v2. Tolera sufixo 'v' (ex.: v0.8.0) e nao-numericos -> 0.
 ver_newer() {
-    local a b i
-    IFS='.' read -r -a a <<<"$1"
-    IFS='.' read -r -a b <<<"$2"
+    local a b i ai bi
+    a="${1#v}"; b="${2#v}"
+    IFS='.' read -r -a a <<<"$a"
+    IFS='.' read -r -a b <<<"$b"
     for i in 0 1 2; do
-        local ai="${a[$i]:-0}" bi="${b[$i]:-0}"
-        [ "$ai" -gt "$bi" ] && return 0
-        [ "$ai" -lt "$bi" ] && return 1
+        ai="${a[$i]:-0}"; bi="${b[$i]:-0}"
+        case "$ai" in *[!0-9]*) ai=0;; esac
+        case "$bi" in *[!0-9]*) bi=0;; esac
+        [ "$ai" -gt "$bi" ] 2>/dev/null && return 0
+        [ "$ai" -lt "$bi" ] 2>/dev/null && return 1
     done
     return 1
+}
+
+# ---------- Resolver versao real da release quando VERSION=latest ----------
+# Consulta a API do GitHub para obter o tag_name (ex.: v0.8.0) da ultima
+# release. Se a API falhar (sem rede, rate-limit), mantem 'latest' como
+# fallback e continua usando /releases/latest/download.
+resolve_version() {
+    [ "$VERSION" != "latest" ] && return 0
+    local json tag
+    json="$(curl -fsSL --max-time "$CURL_TIMEOUT" "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null || true)"
+    tag="$(printf '%s\n' "$json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+    if [ -n "$tag" ]; then
+        VERSION="$tag"
+        log "release mais recente detectada: ${VERSION}"
+    else
+        warn "nao foi possivel detectar a versao da ultima release; usando 'latest'."
+    fi
 }
 
 # ---------- Validacao de requisitos ----------
@@ -361,13 +386,15 @@ if [ "$CLIENT_ONLY" = "0" ]; then
 fi
 
 # ---------- 4. Baixar binarios + SHA256 ----------
-BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/${VERSION}/download}"
+# Descobre a versao real da release antes de montar a URL (resolve 'latest').
+resolve_version
+BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/download/${VERSION}}"
 [ "$VERSION" = "latest" ] && BASE_URL="${XEMONITOR_BASE_URL:-https://github.com/${REPO}/releases/latest/download}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-log "baixando ${TARBALL} (v${VERSION})..."
+log "baixando ${TARBALL} (${VERSION})..."
 curl_fetch "${BASE_URL}/${TARBALL}" "${TMP}/${TARBALL}" || die "falha no download de ${BASE_URL}/${TARBALL}"
 
 log "baixando ${TARBALL}.sha256..."
