@@ -12,7 +12,7 @@
 ;   iscc packaging\windows\xemonitor.iss
 ; ============================================================
 #define MyAppName "XeMonitor"
-#define MyAppVersion "0.7.2"
+#define MyAppVersion "0.8.0"
 #define MyAppPublisher "XeMonitor"
 #define MyAppExeName "xemonitor-gui.exe"
 

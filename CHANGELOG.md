@@ -2,6 +2,123 @@
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-29
+
+### Added (install.sh 1.4.0)
+
+- **Autodetect de device USB-serial no bridge** — `src/bridge.zig` agora tem
+  `autoDetectSerial()` que tenta, em ordem: `/dev/serial/by-id/*` (udev
+  symlinks; mais estavel entre reboots) → `/dev/ttyUSB*` → `/dev/ttyACM*` →
+  `/dev/ttyUSB0` (fallback). Override via `--device <path>`. O install grava
+  o resultado em `/etc/xemonitor/device`; as units systemd/OpenRC fazem
+  `source` desse arquivo e passam `--device "$DEVICE"` para o bridge.
+- **`--print-device` flag no bridge** — detecta e imprime o path, depois
+  sai. Usado pelo install.sh para descobrir o device antes de instalar.
+- **DTR/RTS confirmados via `TIOCMGET`** — após `ioctl(TIOCMBIS)`, o bridge
+  chama `TIOCM_GET` e loga se as modem lines ficaram realmente setadas.
+  Quando o driver é `cdc_acm` (sem suporte), o log avisa e sugere
+  `sudo modprobe ch341` (driver nativo que suporta DTR/RTS).
+- **Detecção de sessão gráfica + install do injetor** — install detecta
+  `XDG_SESSION_TYPE` e:
+  - **Wayland**: instala `ydotool` via `pacman`/`apt`/`dnf`/`apk` e ativa
+    `ydotool.socket` (systemd de usuário).
+  - **X11**: instala `xdotool` (idem).
+  - **tty/sem GUI**: pula GUI/desktop entry/autostart e loga que o cliente
+    CLI continua funcional. Validação real vai para `xemonitor-diagnose`.
+- **Detecção de libc (glibc vs musl)** — em Alpine/musl, install pula o
+  GUI e avisa (binário glibc é incompatível com musl). Bridge+CLI continuam.
+- **Pre-check de driver kernel** — install.sh consulta `udevadm info`/
+  `/sys/class/tty/.../driver` para detectar o driver ativo do device.
+  Se for `cdc_acm`, tenta `modprobe ch341` automaticamente. Status aparece
+  no resumo final.
+- **Banner destacado de logout/login** — quando `id -Gn` difere dos grupos
+  no `/etc/group` (mudanças não-efetivas), install exibe um banner
+  amarelo no momento de `usermod -aG` E no resumo final. Resolve o
+  problema clássico "instalei, mas o GUI não injeta" (uinput negado).
+- **Status real no resumo final** — bloco com cores mostrando serviço,
+  porta 9000, device, driver, injetor (ydotool.socket/xdotool), grupos.
+  Falhas em qualquer item aparecem com cor vermelha + instrução de fix.
+- **Flag `--client-only`** — instala só cliente+GUI (sem bridge/service/
+  udev de CH340). Para thin clients conectando a um bridge remoto.
+- **Flag `--bridge-only`** — instala só bridge+service+udev CH340
+  (sem GUI/cliente). Para servidores headless.
+- **Reinstall = restart do service** — rodar install.sh duas vezes
+  detecta o service existente e chama `systemctl restart` (em vez de
+  `enable`+`start`, que podem falhar se já rodando). Binário é atualizado.
+- **`xemonitor-diagnose` no tarball** — `diagnose_xemonitor.sh` agora
+  vai no release e é instalado como `/usr/local/bin/xemonitor-diagnose`.
+  Nova seção "Driver & kernel" cobre driver ativo, módulo ch341
+  carregado, modinfo e dmesg.
+
+### Added (GUI 0.8.0)
+
+- **Askpass (sem polkit)** — `runPrivileged` em `src/gui.zig` agora
+  detecta o askpass disponível na ordem `ksshaskpass` (KDE) → `zenity`
+  → `yad` → `gnome-passwd` → terminal (`konsole`/`xterm`/`gnome-terminal`/
+  `alacritty`/`foot`) → instrução manual. Quando o GUI precisa
+  `systemctl start` (modo `systemd-system`), o askpass gráfico pede a
+  senha; o terminal fallback spawna um `konsole`/`xterm` pedindo senha
+  nativa do sudo. Resolve a dependência implícita de `polkit`/`pkexec`
+  que quebrava em distros sem agente polkit.
+- **Detecção automática de server_mode (systemd-system vs user)** — no
+  init do GUI, em Linux, detecta qual unit está realmente rodando e
+  reconcilia com o `server_mode` do conf. Resolve a inconsistência
+  documentada (CachyOS user unit vs Arch system unit; install
+  rescrevendo o conf do run_xemonitor.sh).
+
+### Changed
+
+- **`run_xemonitor.sh`** agora autodetecta device (via `bridge
+  --print-device` + fallback) e grava em `/etc/xemonitor/device`. Coerente
+  com o caminho `install.sh`.
+- **Systemd unit** agora faz `source /etc/xemonitor/device` para pegar o
+  `DEVICE=...` (em vez de hardcoded `--device /dev/ttyUSB0`).
+- **OpenRC init** idem: `start_pre()` faz source do device file.
+- **`install.sh 1.3.0 → 1.4.0`** (separado do binário `0.7.2 → 0.8.0`).
+
+### Fixed (v0.8.0 em CachyOS — real install, EXIT=0 / validação TUDO OK)
+
+- **`local` no top-level removido** — em 5 pontos (grupos, injetor,
+  validação porta 9000, validação/status ydotool) um `local` fora de função
+  abortava o script com `set -euo pipefail` ("local: somente pode ser usado
+  em uma função"). Trocado por variáveis globais sem `local`.
+- **ydotool unit por distro** — Arch/CachyOS/Manjaro usam `ydotool.service`
+  (não `.socket`, inexistente). install detecta a unit real
+  (`ytool.socket` → `ytool.service`) antes de `enable --now`, e a validação/
+  status acha qualquer uma das duas. No CachyOS ativou `ydotool.service`
+  corretamente.
+- **Grupos inexistentes no usermod/check_groups** — Arch/CachyOS usam
+  `uucp` sem `dialout`; install agora adiciona só os grupos que existem e o
+  `check_groups` ignora grupo inexistente (elimina o aviso falso
+  "FALTAM dialout" e o erro `usermod: grupo 'dialout' não existe`).
+- **Validação da porta 9000 com retry** — o `restart` do bridge pode
+  demorar a escutar; a validação esperava até 10s antes de marcar erro
+  (corrige falso negativo "porta não está escutando").
+- **Comparação de versão do instalador** — `check_update` avisava
+  "existe uma versao mais nova (1.3.0)" quando a local era 1.4.0. Novo
+  comparador `ver_newer()` (semver) só avisa quando a remota é de fato
+  maior.
+- **Bridge: delay entre `TIOCMBIS` e leitura serial** — `src/bridge.zig`
+  (`configureSerial`) aciona DTR+RTS via `ioctl(TIOCMBIS)` mas, sem um
+  intervalo entre o set e o uso, o driver `ch341-uart` não aplicava as
+  modem lines a tempo (o `TIOCMGET` confirmava `status=0x20` sem DTR/RTS,
+  e o scanner ficava mudo mesmo com DTR/RTS fisicamente ativos). Adicionado
+  `sleepNs(200 * std.time.ns_per_ms)` entre o `TIOCMBIS` e o início da
+  leitura. Validado em CachyOS: scan cru em 115200 com DTR+RTS confirmados
+  (`7898773920105\r\n`) injetado de ponta a ponta no Kate.
+
+### Notes
+
+- **Plataforma-alvo primaria**: CachyOS (KDE Wayland). Validado: ydotool
+  em `[extra]`, ksshaskpass nativo, ch341 no kernel padrão. WSL2 e Docker
+  ficam como TODOs (documentados no `.checkpoint.md`).
+- **Backward-compat**: o autodetect é backward-compatible (sem flag
+  `--device` = comportamento antigo + log). Quem tinha `/dev/ttyUSB0`
+  fixo continua funcionando.
+- **Backward-compat do GUI conf**: campo `server_mode` aceita os 4 valores
+  antigos (`subprocess`/`systemd-user`/`systemd-system`/`wsl`); a
+  detecção só ajusta quando há mismatch entre conf e unit real.
+
 ## [0.7.2] — 2026-08-17
 
 ### Fixed
@@ -21,6 +138,9 @@
   `cp "" /usr/local/bin/...` silencioso quando `to_wsl_path` falha.
 
 ### Added
+- **CI/CD Windows Build** — `build-windows` job no `release.yml`: `windows-latest` runner, Zig 0.16.0, Inno Setup via Chocolatey, `ISCC.exe` compila `XeMonitor-*-setup.exe`
+- **`release` job** — agrega `linux-binaries` + `windows-installer` → GitHub Release único
+- **install.sh v1.3.0** — SHA256 verification, ANSI colors embutidos, `--check-only/--dry-run/--validate/--quiet/--verbose`, `$HOME/.local/share` para dados grandes
 - **`wsl_timeout.ps1` tarefa `svc_status`** — verifica `rc-service status`
   + `ss -tln | grep :9000` após `svc_enable`; usado pelo `install_windows.bat`
   pós-Fase 4 passo 1 para confirmar que o bridge está realmente ouvindo.

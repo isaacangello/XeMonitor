@@ -5,6 +5,12 @@
 # de xemonitor-gui/xemonitor e reinicia o bridge para garantir estado limpo.
 #
 # Uso: ./run_xemonitor.sh [--no-replace]
+#
+# NOTA: este é o "caminho system" (bridge como root). Para o "caminho user"
+# (bridge no escopo do usuário, sem polkit), o install.sh padrão é suficiente.
+# As duas alternativas existem porque o caminho user dispensa pkexec mas exige
+# wrapper `sg uucp` para acessar o device; o caminho system dispensa o wrapper
+# mas precisa pedir senha para systemctl. Mantemos ambos como caminhos válidos.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,11 +32,34 @@ echo " Iniciando XeMonitor (Linux host)"
 echo "========================================"
 echo
 
-# 0. Scanner presente?
-if [ ! -c /dev/ttyUSB0 ]; then
-    echo "[AVISO] /dev/ttyUSB0 nao encontrado. Conecte o scanner (CH340) e rode novamente."
+# 0. Autodetect device USB-serial (mesma heuristica do bridge + install.sh).
+DETECTED_DEVICE=""
+if [ -x "$BIN/bridge" ]; then
+    DETECTED_DEVICE="$("$BIN/bridge" --print-device 2>/dev/null || true)"
+fi
+if [ -z "$DETECTED_DEVICE" ] || [ ! -e "$DETECTED_DEVICE" ]; then
+    # Fallbacks sem bridge compilado: varrer /dev manualmente.
+    if ls /dev/serial/by-id/* >/dev/null 2>&1; then
+        DETECTED_DEVICE="$(ls /dev/serial/by-id/* 2>/dev/null | head -1)"
+    elif ls /dev/ttyUSB* >/dev/null 2>&1; then
+        DETECTED_DEVICE="$(ls /dev/ttyUSB* 2>/dev/null | head -1)"
+    elif ls /dev/ttyACM* >/dev/null 2>&1; then
+        DETECTED_DEVICE="$(ls /dev/ttyACM* 2>/dev/null | head -1)"
+    else
+        DETECTED_DEVICE="/dev/ttyUSB0"
+    fi
+fi
+echo "[INFO] device USB-serial autodetectado: ${DETECTED_DEVICE}"
+if [ ! -e "$DETECTED_DEVICE" ]; then
+    echo "[AVISO] ${DETECTED_DEVICE} nao encontrado. Conecte o scanner (CH340) e rode novamente."
     echo "        O bridge (start-pre) espera o dispositivo por ate 60s."
     echo
+fi
+
+# Grava em /etc/xemonitor/device para o systemd unit pegar via source.
+if [ -w /etc/xemonitor/device ] || (command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null); then
+    sudo mkdir -p /etc/xemonitor 2>/dev/null || true
+    printf 'DEVICE=%s\n' "$DETECTED_DEVICE" | sudo tee /etc/xemonitor/device >/dev/null 2>&1 || true
 fi
 
 # 0b. Porta 9000 livre? (bridge antigo costuma ficar preso aí)
@@ -138,9 +167,9 @@ for i in $(seq 1 30); do
 done
 sleep 1
 if systemctl is-active --quiet xemonitor-bridge; then
-    echo "[OK] Bridge rodando (systemd system, root)."
+    echo "[OK] Bridge rodando (systemd system, root, device=${DETECTED_DEVICE})."
 else
-    echo "[AVISO] Bridge pode estar aguardando /dev/ttyUSB0."
+    echo "[AVISO] Bridge pode estar aguardando ${DETECTED_DEVICE}."
 fi
 
 # 5b. Probe TCP: confirma que o servidor aceita conexao (antes de abrir o GUI)

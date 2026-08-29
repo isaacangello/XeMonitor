@@ -42,12 +42,70 @@ const Mutex = struct {
 
 const TCP_PORT: u16 = 9000;
 const BAUD: u32 = 115200;
-const SERIAL = "/dev/ttyUSB0";
+const SERIAL_DEFAULT = "/dev/ttyUSB0";
+/// Device serial ativo. Pode ser sobrescrito por --device ou autoDetectSerial().
+var serial_device: []const u8 = SERIAL_DEFAULT;
 const CODE_MAX = 256;
 const TIOCM_DTR: c_int = 0x002;
 const TIOCM_RTS: c_int = 0x004;
+const TIOCM_CTS: c_int = 0x020;
+const TIOCM_LE: c_int = 0x001;
+const TIOCM_DSR: c_int = 0x100;
+const TIOCM_CAR: c_int = 0x040;
+const TIOCM_RNG: c_int = 0x080;
+const TIOCM_GET: c_ulong = 0x5415;
+const TIOCM_BIS: c_ulong = 0x5417;
 
 var verbose: bool = false;
+
+/// Auto-detecta o device USB-serial. Ordem:
+///   1) /dev/serial/by-id/*  (symlinks do udev; mais estavel entre reboots)
+///   2) /dev/ttyUSB*         (CH340, FTDI, etc.)
+///   3) /dev/ttyACM*         (CDC ACM)
+///   4) /dev/ttyUSB0         (fallback hardcoded)
+/// Retorna o path alocado em `alloc`. Caller deve liberar.
+fn autoDetectSerial(io: std.Io, alloc: std.mem.Allocator) []u8 {
+    const BY_ID = "/dev/serial/by-id";
+
+    // 1) /dev/serial/by-id: tentar cada symlink
+    if (std.Io.Dir.cwd().access(io, BY_ID, .{})) |_| {
+        var dir = std.Io.Dir.cwd().openDir(io, BY_ID, .{ .iterate = true }) catch return alloc.dupe(u8, SERIAL_DEFAULT) catch unreachable;
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            if (entry.kind != .sym_link) continue;
+            const name = entry.name;
+            const full = std.fmt.allocPrint(alloc, "{s}/{s}", .{ BY_ID, name }) catch continue;
+            const fd = c.open(full.ptr, c.O_RDWR | c.O_NOCTTY);
+            if (fd >= 0) {
+                _ = c.close(fd);
+                return full;
+            }
+            alloc.free(full);
+        }
+    } else |_| {}
+
+    // 2 + 3) /dev: varrer ttyUSB* e ttyACM*
+    var dev_dir = std.Io.Dir.cwd().openDir(io, "/dev", .{ .iterate = true }) catch return alloc.dupe(u8, SERIAL_DEFAULT) catch unreachable;
+    defer dev_dir.close(io);
+    var dev_it = dev_dir.iterate();
+    while (dev_it.next(io) catch null) |entry| {
+        if (entry.kind != .character_device) continue;
+        const n = entry.name;
+        const ok = std.mem.startsWith(u8, n, "ttyUSB") or std.mem.startsWith(u8, n, "ttyACM");
+        if (!ok) continue;
+        const full = std.fmt.allocPrint(alloc, "/dev/{s}", .{n}) catch continue;
+        const fd = c.open(full.ptr, c.O_RDWR | c.O_NOCTTY);
+        if (fd >= 0) {
+            _ = c.close(fd);
+            return full;
+        }
+        alloc.free(full);
+    }
+
+    // 4) fallback final
+    return alloc.dupe(u8, SERIAL_DEFAULT) catch unreachable;
+}
 
 fn hexDump(buf: []const u8, out: []u8) []const u8 {
     var n: usize = 0;
@@ -155,14 +213,17 @@ fn usage() void {
         \\Usage:
         \\  bridge                       raw TCP server (default port 9000)
         \\  bridge --tcp-port <n>        raw TCP server on a custom port
+        \\  bridge --device <path>       serial device (default: autodetect)
         \\  bridge -s <url>              HTTP server (e.g. http://0.0.0.0:8080)
         \\  bridge --fake-scan <ms>      push a fake 'TEST<n>' code every <ms> ms (no hardware needed)
         \\  bridge --verbose              log every serial read (diagnostics)
+        \\  bridge --print-device         print autodetected serial path and exit
         \\  bridge -h                    show this help
         \\
         \\Examples:
         \\  bridge
         \\  bridge --tcp-port 9001
+        \\  bridge --device /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
         \\  bridge -s http://0.0.0.0:8080
         \\  bridge --fake-scan 2000
         \\  bridge --verbose
@@ -199,14 +260,39 @@ fn configureSerial(fd: c_int) void {
     _ = c.tcflush(fd, c.TCIOFLUSH);
 
     const dtr_rts: c_int = TIOCM_DTR | TIOCM_RTS;
-    if (c.ioctl(fd, c.TIOCMBIS, &dtr_rts) != 0) {
-        std.debug.print("[bridge] warning: failed to assert DTR+RTS\n", .{});
+    if (c.ioctl(fd, TIOCM_BIS, &dtr_rts) != 0) {
+        std.debug.print("[bridge] warning: failed to assert DTR+RTS (ioctl TIOCMBIS err={d})\n", .{std.posix.errno(fd)});
+        return;
+    }
+
+    // Aciona TIOCMBIS e aguarda o driver aplicar as modem lines antes de usar.
+    // No ch341-uart o TIOCMGET logo apos o TIOCMBIS ainda reflete o estado
+    // anterior (timing); com um pequeno delay o DTR+RTS estabilizam. Sem esse
+    // delay o Honeywell 1900 nao transmite (a serial fica muda apesar do
+    // scanner bipar). Validado em CachyOS: com sleep(1s) o scan cru em por
+    // completo (`7898773920105`) e sem ele nada chega.
+    sleepNs(200 * std.time.ns_per_ms);
+
+    // Confirma via TIOCMGET: o driver precisa implementar a leitura do estado
+    // das modem lines. Se o driver for cdc_acm (sem suporte), a confirmacao
+    // falha e avisamos. Honeywell 1900 so transmite com DTR+RTS ativos.
+    var status: c_int = 0;
+    if (c.ioctl(fd, TIOCM_GET, &status) == 0) {
+        const dtr_set = (status & TIOCM_DTR) != 0;
+        const rts_set = (status & TIOCM_RTS) != 0;
+        if (dtr_set and rts_set) {
+            std.debug.print("[bridge] DTR+RTS: ok (status=0x{x})\n", .{@as(u32, @bitCast(status))});
+        } else {
+            std.debug.print("[bridge] warning: DTR+RTS nao confirmados (status=0x{x}); o driver pode nao suportar ioctl de modem lines (cdc_acm?). Tente: sudo modprobe ch341\n", .{@as(u32, @bitCast(status))});
+        }
+    } else {
+        std.debug.print("[bridge] warning: TIOCMGET falhou (driver nao suporta modem lines?)\n", .{});
     }
 }
 
 fn openSerial() c_int {
-    std.debug.print("[bridge] opening {s}...\n", .{SERIAL});
-    const fd = c.open(SERIAL, c.O_RDWR | c.O_NOCTTY);
+    std.debug.print("[bridge] opening {s}...\n", .{serial_device});
+    const fd = c.open(serial_device.ptr, c.O_RDWR | c.O_NOCTTY);
     if (fd < 0) {
         std.debug.print("[bridge] failed to open serial\n", .{});
         return -1;
@@ -458,6 +544,18 @@ pub fn main(init: std.process.Init) !u8 {
     var serve_addr: []const u8 = "http://0.0.0.0:8080";
     var tcp_port: u16 = TCP_PORT;
     var fake_scan_ms: ?u64 = null;
+    var print_device_only = false;
+    const gpa = init.gpa;
+    const io_inst = init.io;
+
+    // --print-device: detecta e imprime o device, depois sai.
+    // Usado pelo install.sh antes de instalar o bridge em /usr/local/bin.
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--print-device")) {
+        const path = autoDetectSerial(io_inst, gpa);
+        defer gpa.free(path);
+        std.debug.print("{s}\n", .{path});
+        return 0;
+    }
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -465,6 +563,10 @@ pub fn main(init: std.process.Init) !u8 {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             usage();
             return 0;
+        }
+        if (std.mem.eql(u8, arg, "--print-device")) {
+            print_device_only = true;
+            continue;
         }
         if (std.mem.eql(u8, arg, "--fake-scan")) {
             if (i + 1 >= args.len) {
@@ -494,6 +596,16 @@ pub fn main(init: std.process.Init) !u8 {
             };
             continue;
         }
+        if (std.mem.eql(u8, arg, "--device")) {
+            if (i + 1 >= args.len) {
+                std.debug.print("[bridge] --device requires a path\n", .{});
+                usage();
+                return 1;
+            }
+            i += 1;
+            serial_device = args[i];
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--verbose")) {
             verbose = true;
             continue;
@@ -508,6 +620,25 @@ pub fn main(init: std.process.Init) !u8 {
         }
         usage();
         return 1;
+    }
+
+    if (print_device_only) {
+        const path = autoDetectSerial(io_inst, gpa);
+        defer gpa.free(path);
+        std.debug.print("{s}\n", .{path});
+        return 0;
+    }
+
+    // Sem --device, autodetecta agora (se autodetect falhar, SERIAL_DEFAULT).
+    // serial_device aponta para o buffer alocado por autoDetectSerial, que vive
+    // ate o fim do processo (controlado pela variavel global). Em ReleaseSafe
+    // o leak é silencioso; em Debug o path alocado vira um "intentional leak"
+    // (comum em singletons globais).
+    if (std.mem.eql(u8, serial_device, SERIAL_DEFAULT)) {
+        serial_device = autoDetectSerial(io_inst, gpa);
+        std.debug.print("[bridge] device: {s} (autodetect)\n", .{serial_device});
+    } else {
+        std.debug.print("[bridge] device: {s} (--device)\n", .{serial_device});
     }
 
     if (serve_mode) {

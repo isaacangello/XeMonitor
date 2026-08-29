@@ -3,21 +3,35 @@
 # OpenRC init script — instalado em /etc/init.d/xemonitor-bridge
 # (Alpine WSL, CachyOS/OpenRC, etc.). O bridge é musl estático e já
 # re-tenta o /dev/ttyUSB0 a cada 2s, então não há wait pelo device aqui.
+#
+# Sobrescreva em /etc/conf.d/xemonitor-bridge:
+#   device="/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
 
 name="xemonitor-bridge"
 description="XeMonitor serial-to-TCP bridge (Honeywell 1900 / CH340)"
 
-# Pode ser sobrescrito em /etc/conf.d/xemonitor-bridge:
-#   command_opts="--verbose"   (ex.: --verbose para mais log)
 command="/usr/local/bin/xemonitor-bridge"
 command_background="yes"
 command_user="root"
 pidfile="/run/${RC_SVCNAME}.pid"
-command_opts=""
+# command_opts é populado em start() a partir de /etc/xemonitor/device
+# (gravado pelo install.sh) ou /etc/conf.d/xemonitor-bridge (override manual).
+command_args="--device ${device:-/dev/ttyUSB0}"
 
 depend() {
     # TCP server na porta 9000. No WSL a rede vem do host e o servico
     # 'net' pode nao existir (OpenRC nao e o init real no WSL/container),
     # entao nao usamos 'need net' — o bind em 0.0.0.0 funciona mesmo assim.
     after bootmisc
+}
+
+start_pre() {
+    # Se /etc/xemonitor/device existe, source para pegar DEVICE=...
+    if [ -f /etc/xemonitor/device ]; then
+        . /etc/xemonitor/device
+        if [ -n "${DEVICE:-}" ]; then
+            command_args="--device ${DEVICE}"
+        fi
+    fi
+    return 0
 }

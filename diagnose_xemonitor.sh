@@ -199,6 +199,66 @@ check_injector() {
     echo
 }
 
+check_driver_kernel() {
+    echo "--- Driver & kernel (CH340 / DTR-RTS) ---"
+    if [ ! -e "$SERIAL" ]; then
+        report AVISO "$SERIAL nao existe; pulando."
+        echo
+        return
+    fi
+    # Driver ativo (udev ou sysfs fallback).
+    local driver=""
+    if command -v udevadm >/dev/null 2>&1; then
+        driver="$(udevadm info -n "$SERIAL" -q property 2>/dev/null | sed -n 's/^DRIVER=//p' | head -1)"
+    fi
+    if [ -z "$driver" ] && [ -L "/sys/class/tty/$(basename "$SERIAL")/device/driver" ]; then
+        driver="$(basename "$(readlink "/sys/class/tty/$(basename "$SERIAL")/device/driver" 2>/dev/null)" 2>/dev/null)"
+    fi
+    if [ -n "$driver" ]; then
+        report OK "driver ativo: $driver"
+        if [ "$driver" = "ch341" ]; then
+            report OK "driver ch341: suporta ioctl de modem lines (DTR/RTS via TIOCMBIS/TIOCMGET)."
+        elif [ "$driver" = "cdc_acm" ]; then
+            report ERRO "driver cdc_acm NAO suporta DTR/RTS (Honeywell 1900 vai ficar mudo)."
+            report INFO "Correcao: sudo modprobe ch341  (kernel padrao Arch/CachyOS/Debian ja tem o modulo)"
+        else
+            report AVISO "driver '$driver': sem informacao de suporte a DTR/RTS. Confirme: sudo modprobe ch341"
+        fi
+    else
+        report AVISO "driver do device nao detectado (sem udev/sysfs)."
+    fi
+    # Modulo ch341 carregado?
+    if command -v lsmod >/dev/null 2>&1; then
+        if lsmod 2>/dev/null | grep -q "^ch341"; then
+            report OK "modulo ch341 carregado no kernel."
+        else
+            report AVISO "modulo ch341 NAO carregado. Tente: sudo modprobe ch341"
+        fi
+    fi
+    # Modinfo (caminho do .ko, firmware, etc.).
+    if command -v modinfo >/dev/null 2>&1; then
+        local modinfo_path
+        modinfo_path="$(modinfo -F filename ch341 2>/dev/null | head -1)"
+        if [ -n "$modinfo_path" ]; then
+            report OK "modinfo ch341: $modinfo_path"
+        else
+            report AVISO "modinfo ch341: modulo nao encontrado no kernel atual."
+        fi
+    fi
+    # uname (resumo).
+    report INFO "kernel: $(uname -sr)"
+    # dmesg (ultimas mensagens do ch341 / usb).
+    if command -v dmesg >/dev/null 2>&1; then
+        local dmesg_out
+        dmesg_out="$(dmesg 2>/dev/null | grep -iE 'ch341|usbserial' | tail -3)"
+        if [ -n "$dmesg_out" ]; then
+            report INFO "dmesg (ch341/usbserial, ultimas 3):"
+            printf '%s\n' "$dmesg_out" | sed 's/^/         /'
+        fi
+    fi
+    echo
+}
+
 check_log() {
     echo "--- log (xemonitor-$(date +%Y-%m-%d).log, último scan) ---"
     if [ ! -f "$LOG" ]; then
@@ -286,6 +346,7 @@ do_check() {
     check_client
     check_gui
     check_injector
+    check_driver_kernel
     check_log
     if [ "$FAIL" -eq 0 ]; then
         echo "========================================"

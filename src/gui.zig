@@ -100,6 +100,27 @@ const Config = struct {
     lang: []u8,
 };
 
+// Detecta qual unit do bridge esta realmente rodando (Linux). Pode ajudar a
+// reconciliar configuracoes antigas (e.g., server_mode=systemd-system mas so
+// ha unit de usuario ativo). Retorna o nome canonico do server_mode a usar.
+fn detectActiveServerMode(gpa: std.mem.Allocator, io: std.Io) []const u8 {
+    // So faz sentido no Linux.
+    if (os != .linux) return "subprocess";
+
+    const system_active = runCommand(gpa, io, &.{ "systemctl", "is-active", "xemonitor-bridge" }).ok;
+    const user_active = runCommand(gpa, io, &.{ "systemctl", "--user", "is-active", "xemonitor-bridge" }).ok;
+
+    if (system_active and !user_active) return "systemd-system";
+    if (user_active and !system_active) return "systemd-user";
+    if (system_active and user_active) {
+        // Conflito: os dois estao ativos. System ganha (padrao do install.sh
+        // v0.8.0+), mas logamos o problema.
+        std.debug.print("[gui] warning: system E user units ativos; usando systemd-system. Desabilite um.\n", .{});
+        return "systemd-system";
+    }
+    return "systemd-system";
+}
+
 fn defaultConfig(gpa: std.mem.Allocator) Config {
     return .{
         .tcp_host = gpa.dupe(u8, "127.0.0.1") catch "",
@@ -517,6 +538,20 @@ const App = struct {
         const locale = i18n.Locale.fromString(cfg.lang);
         i18n.setLocale(locale);
 
+        // Reconciliacao no Linux: se o server_mode lido do conf nao bate com
+        // o unit que esta realmente rodando, ajustamos. Isso evita a
+        // inconsistencia documentada no .checkpoint.md onde rodar
+        // run_xemonitor.sh (user unit) e depois o install (system unit)
+        // deixa o GUI falando com o unit errado.
+        if (os == .linux and !std.mem.eql(u8, cfg.server_mode, "subprocess")) {
+            const detected = detectActiveServerMode(gpa, io);
+            if (!std.mem.eql(u8, detected, cfg.server_mode)) {
+                std.debug.print("[gui] server_mode: conf='{s}' detectado='{s}' -> usando '{s}'\n", .{ cfg.server_mode, detected, detected });
+                gpa.free(cfg.server_mode);
+                cfg.server_mode = gpa.dupe(u8, detected) catch cfg.server_mode;
+            }
+        }
+
         var host_buf = [_]u8{0} ** 64;
         const hn = @min(cfg.tcp_host.len, host_buf.len - 1);
         @memcpy(host_buf[0..hn], cfg.tcp_host[0..hn]);
@@ -781,21 +816,95 @@ fn runWslStatus(app: *App) bool {
     return runBridgeCtl(app, "status").ok;
 }
 
-// Executa um comando com privilegios de root: pkexec (agente polkit) com
-// fallback para um terminal konsole pedindo a senha.
-fn runPrivileged(app: *App, argv: []const []const u8) CmdResult {
-    var full = app.gpa.alloc([]const u8, argv.len + 1) catch return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
-    full[0] = "pkexec";
-    @memcpy(full[1..], argv);
-    const res = runCommand(app.gpa, app.io, full);
-    app.gpa.free(full);
-    if (res.ok) return res;
+// Detecta um askpass disponível (programa que mostra prompt de senha e
+// devolve via stdout). Ordem de preferência: ksshaskpass (KDE) > zenity
+// (GTK) > yad > gnome-passwd > terminal (xterm/konsole/gnome-terminal)
+// rodando `sudo -v` num subshell. Retorna null se nenhum disponível.
+//
+// SUDO_ASKPASS: se o binário existir, `sudo -A` o invoca passando o prompt
+// como argv[1]; o askpass escreve a senha em stdout; sudo consome.
+// Ref: https://man.archlinux.org/man/sudo.8#SUDO_ASKPASS
+fn findAskpass(gpa: std.mem.Allocator, io: std.Io) ?[]u8 {
+    const candidates = [_][]const u8{
+        "ksshaskpass", "zenity", "yad", "gnome-passwd",
+    };
+    for (candidates) |name| {
+        const probe = std.fmt.allocPrint(gpa, "command -v {s} >/dev/null 2>&1", .{name}) catch continue;
+        const res = runCommand(gpa, io, &.{ "bash", "-c", probe });
+        gpa.free(probe);
+        if (res.ok) {
+            // Resolve o path completo via `which`.
+            const which_res = runCommand(gpa, io, &.{ "which", name });
+            defer gpa.free(which_res.stdout);
+            defer gpa.free(which_res.stderr);
+            if (which_res.ok and which_res.stdout.len > 0) {
+                const trimmed = std.mem.trim(u8, which_res.stdout, " \t\r\n");
+                if (trimmed.len > 0) return gpa.dupe(u8, trimmed) catch null;
+            }
+            return gpa.dupe(u8, name) catch null;
+        }
+    }
+    // Terminal-based fallback: abrir konsole/xterm/gnome-terminal rodando sudo -v.
+    const terminals = [_][]const u8{ "konsole", "xterm", "gnome-terminal", "alacritty", "foot" };
+    for (terminals) |name| {
+        const probe = std.fmt.allocPrint(gpa, "command -v {s} >/dev/null 2>&1", .{name}) catch continue;
+        const res = runCommand(gpa, io, &.{ "bash", "-c", probe });
+        gpa.free(probe);
+        if (res.ok) return gpa.dupe(u8, name) catch null;
+    }
+    return null;
+}
 
-    const joined = std.mem.join(app.gpa, " ", argv) catch return res;
-    defer app.gpa.free(joined);
-    const line = std.fmt.allocPrint(app.gpa, "{s} ; echo ; echo '{s}' ; read", .{ joined, i18n.t("press_enter") }) catch return res;
-    defer app.gpa.free(line);
-    _ = runCommand(app.gpa, app.io, &.{ "konsole", "--hide-menubar", "--hide-tabbar", "--geometry=560x220", "-e", "bash", "-c", line });
+// Executa um comando com privilegios de root via askpass (sem depender de
+// polkit/pkexec). Ordem:
+//   1) SUDO_ASKPASS=<askpass> sudo -A <argv>  (sem prompt, askpass grafico)
+//   2) konsole/xterm/gnome-terminal -e "sudo <argv>"  (terminal spawned)
+//   3) mensagem de instrucao + return ok=false
+fn runPrivileged(app: *App, argv: []const []const u8) CmdResult {
+    const gpa = app.gpa;
+    const io = app.io;
+
+    if (findAskpass(gpa, io)) |askpass| {
+        defer gpa.free(askpass);
+
+        // Tenta detectar se o askpass e grafico (nao-terminal) ou terminal.
+        const is_terminal_askpass =
+            std.mem.eql(u8, std.fs.path.basename(askpass), "konsole") or
+            std.mem.eql(u8, std.fs.path.basename(askpass), "xterm") or
+            std.mem.eql(u8, std.fs.path.basename(askpass), "gnome-terminal") or
+            std.mem.eql(u8, std.fs.path.basename(askpass), "alacritty") or
+            std.mem.eql(u8, std.fs.path.basename(askpass), "foot");
+
+        if (!is_terminal_askpass) {
+            // SUDO_ASKPASS: askpass grafico; sudo -A nao mostra prompt no TTY.
+            // Passamos o env via `env SUDO_ASKPASS=...` (POSIX).
+            const joined_cmd = std.mem.join(gpa, " ", argv) catch return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
+            defer gpa.free(joined_cmd);
+            const shell_cmd = std.fmt.allocPrint(gpa, "SUDO_ASKPASS='{s}' sudo -A {s}", .{ askpass, joined_cmd }) catch return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
+            defer gpa.free(shell_cmd);
+            const res = runCommand(gpa, io, &.{ "bash", "-c", shell_cmd });
+            if (res.ok) return res;
+            return res;
+        }
+
+        // Terminal spawned: sudo direto (sem -A); o terminal mostra o prompt.
+        const joined = std.mem.join(gpa, " ", argv) catch return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
+        defer gpa.free(joined);
+        const cmd = std.fmt.allocPrint(gpa, "sudo {s}", .{joined}) catch return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
+        defer gpa.free(cmd);
+        // Spawna o terminal e nao bloqueia (nowait pattern via thread).
+        _ = runCommand(gpa, io, &.{ askpass, "-e", "bash", "-c", cmd });
+        // Consideramos ok=true (o terminal vai lidar); o caller vai validar
+        // com portIsOpen / systemctl is-active depois.
+        return .{ .ok = true, .stdout = &.{}, .stderr = &.{} };
+    }
+
+    // Nenhum askpass: instrui o usuario a rodar sudo manualmente.
+    const joined = std.mem.join(gpa, " ", argv) catch return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
+    defer gpa.free(joined);
+    const line = std.fmt.allocPrint(gpa, "{s} ; echo ; echo '{s}' ; read", .{ joined, i18n.t("press_enter") }) catch return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
+    defer gpa.free(line);
+    _ = runCommand(gpa, io, &.{ "konsole", "--hide-menubar", "--hide-tabbar", "--geometry=560x220", "-e", "bash", "-c", line });
     return .{ .ok = false, .stdout = &.{}, .stderr = &.{} };
 }
 

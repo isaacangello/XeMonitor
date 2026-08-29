@@ -13,7 +13,7 @@
   (`configureSerial`). Sem isso, a leitura crua em `/dev/ttyUSB0` fica em
   **zero bytes** (sintoma visto em 2026-08-15). Não remover essa chamada.
 - Driver CH340 no Windows **quebrado** (erro 31 / AccessDenied) → o fluxo ativo usa **TCP bridge via WSL2**:
-  - **WSL2** lê `/dev/ttyUSB0` e serve via TCP na porta **9000** (`zig-out/bin/bridge`) — hoje **Alpine/OpenRC** (padrão; Arch/systemd mantido como fallback)
+  - **WSL2** lê `/dev/ttyUSB0` e serve via TCP na porta **9000** (`zig-out/bin/bridge`) — hoje **Alpine/OpenRC/musl** (padrão; Arch/systemd mantido como fallback legacy)
   - **Windows** conecta com `xemonitor.exe --tcp 127.0.0.1:9000` e injeta via `SendInput` (Win32, nativo, sem PowerShell/clipboard)
   - O **`xemonitor-gui.exe` é o app principal no Windows** (janela + bandeja); ele lê `%APPDATA%\xemonitor\xemonitor-gui.conf` e, com `server_mode=wsl` + `auto_start`, controla o bridge (via `bridge_ctl.bat`) e sobe o cliente automaticamente.
 
@@ -66,7 +66,7 @@ packaging/windows/                → instalador Windows: xemonitor.iss (Inno Se
 install.sh                        → instalador Linux (curl | bash): release + udev + grupos + serviço
 uninstall.sh                      → fonte do desinstalador Linux (--purge remove config+logs);
                                     empacotado no release como /usr/local/bin/xemonitor-uninstall
-.github/workflows/release.yml     → CI/CD: tags v* → build musl ReleaseSafe (xemonitor+bridge) + gui glibc (ubuntu-22.04) → GitHub Release
+.github/workflows/release.yml     → CI/CD: tags v* → **build-linux** (ubuntu-22.04, musl ReleaseSafe) + **build-windows** (windows-latest, Inno Setup/ISCC) → **release job** agrega artefatos → GitHub Release
 TODO.md               → plano/checklist da sessão atual
 .checkpoint.md        → diário de sessão (contexto + pendências)
 CHANGELOG.md          → changelog
@@ -85,7 +85,9 @@ CHANGELOG.md          → changelog
 1. ✅ **xemonitor como teclado nos dois SO** — Windows: `SendInput` (validado com **scan físico real** no v0.5.0 — ver fix DTR/RTS abaixo); Linux: uinput/ydotool (validado no CachyOS).
 2. ✅ **Migrar bridge WSL de Arch/systemd → Alpine/OpenRC** (menos recursos) — feito e validado no v0.5.0 (`openrc/xemonitor-bridge` + `bridge_ctl.bat`); Arch mantido como fallback.
 3. ✅ **Instalador Windows** — `packaging/windows/xemonitor.iss` (Inno Setup, next-next-finish) + `install_windows.bat`; GUI como app principal (validado no v0.5.1). v0.6.0: modo Reparo, ch341 automático, GUI via tarefa LIMITED, diagnose empacotado.
-4. ✅ **Instalador Linux**: `curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash` (feito; tags v0.1.0 a v0.5.0 publicadas).
+4. ✅ **Instalador Linux**: `curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash` (feito; tags v0.1.0 a v0.5.0 publicadas). **v0.8.0**: install.sh 1.4.0 com autodetect de device, detecção de sessão/libc, install do injetor, banner logout, status real, `--client-only`/`--bridge-only`, driver/kernel check, DTR/RTS confirm, diagnose no tarball, askpass sem polkit, GUI detecta system vs user unit.
+5. ⏳ **v0.8.0 release** (validação CachyOS + tag + release)
+6. ⏳ **WSL2 + Docker** — TODOs pós-v0.8.0
 
 ## Comandos
 ```cmd
@@ -114,7 +116,7 @@ scripts\bridge_ctl.bat stop
 scripts\bridge_ctl.bat enable
 scripts\bridge_ctl.bat ch341       :: garante driver ch341 + /dev/ttyUSB0
 
-:: Bridge manual no WSL (Arch/systemd, fallback)
+:: Bridge manual no WSL (Arch/systemd, fallback legacy)
 wsl -d Arch -u root systemctl start xemonitor-bridge
 wsl -d Arch -u root systemctl status xemonitor-bridge
 
@@ -124,17 +126,22 @@ systemctl --user status xemonitor-bridge
 journalctl --user -u xemonitor-bridge -f
 
 :: Docker (tarefa agendada 'init Docker WSL' cuida no boot/logon)
-wsl -d Arch -u root systemctl status docker
+wsl -d Alpine -u root systemctl status docker
 ```
 
 ## Ambiente
 - Zig **0.16.0** em `C:\zig\zig-x86_64-windows-0.16.0\` (Windows); **0.16.0** no WSL; CachyOS (dev/teste Linux)
 - libserialport em `C:\msys64\ucrt64\`
-- WSL2 distro **Alpine** (nome: `Alpine`, OpenRC) — padrão; **Arch** (nome: `Arch`) mantido como fallback, systemd rodando, Docker ativo
+- WSL2 distro **Alpine** (nome: `Alpine`, **OpenRC**, **musl**) — padrão; **Arch** (nome: `Arch`) mantido como fallback legacy, systemd rodando, Docker ativo
 - **CachyOS** (Linux host de dev/teste): Wayland + ydotool (`/run/user/1000/.ydotool_socket`), bridge via **unit systemd de usuário** `~/.config/systemd/user/xemonitor-bridge.service` com `ExecStart=/usr/bin/sg uucp -c '...bridge'` (wrapper dispensa re-login; sessão antiga não herdou grupo `uucp`)
 - usbipd em `C:\Program Files\usbipd-win\usbipd.exe` (nem sempre no PATH)
 - `gh` (GitHub CLI) em `C:\Program Files\GitHub CLI\gh.exe`
 - Git remote: `git@github.com:isaacangello/XeMonitor.git` (SSH)
+
+### CI/CD (GitHub Actions)
+- **build-linux**: `ubuntu-22.04` → Zig 0.16.0 → `zig build` (musl ReleaseSafe) + `zig build bridge` + `zig build gui` (glibc) → `xemonitor-linux-x86_64.tar.gz` + sha256
+- **build-windows**: `windows-latest` → Zig 0.16.0 + Chocolatey Inno Setup → `zig build` (Windows) + `ISCC.exe` → `XeMonitor-*-setup.exe`
+- **release**: `needs: [build-linux, build-windows]` → `ubuntu-22.04` → baixa artifacts → `softprops/action-gh-release@v2` → publica release com ambos artefatos
 
 ## Convenções / avisos
 - **Não rodar o CLion elevado para testes de injeção**: processo admin não injeta teclas (UIPI) em janelas não-elevadas.
