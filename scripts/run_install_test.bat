@@ -46,11 +46,10 @@ set "WRAPPER=%TEMP%\xm_run_install_test_%STAMP%.cmd"
 > "%WRAPPER%" echo @echo off
 >>"%WRAPPER%" echo cd /d "%STAGING%"
 >>"%WRAPPER%" echo call "%STAGING%\packaging\windows\install_windows.bat" /silent
->>"%WRAPPER%" echo echo EXIT=%errorlevel%
+>>"%WRAPPER%" echo echo EXIT=%%errorlevel%%
 
-:: 4) Subir o wrapper com RunAs (admin). O Start-Process nao suporta
-::    -Verb RunAs + -RedirectStandardOutput, entao o wrapper redireciona
-::    internamente para LOGFILE.
+:: 4) Subir o wrapper com RunAs (admin). Para execucao interativa, o
+:: UAC aparece. Em headless (CI), seria necessario outro mecanismo.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$p = Start-Process -FilePath '%WRAPPER%' -Verb RunAs -PassThru -Wait; exit $p.ExitCode" ^
     > "%LOGFILE%" 2>&1
