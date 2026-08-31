@@ -1,5 +1,86 @@
 const std = @import("std");
 
+/// Versao semver do binario `bridge`. Independente da versao do app
+/// (build.zig.zon .version). Bumpar manualmente aqui quando o codigo do
+/// bridge mudar de forma observavel pelo usuario.
+const BRIDGE_VERSION: []const u8 = "0.8.0";
+
+/// Resolve o `bridge_build` (contador de compilacao, 3+ digitos) com a
+/// seguinte ordem de fallback:
+///   1) arquivo `zig-out/.bridge_build` (persiste entre builds locais)
+///   2) env `XM_BRIDGE_BUILD` (override manual/CI)
+///   3) `001` (bootstrap, gravado no arquivo)
+/// Incrementa o contador a cada `zig build bridge` (auto-bump).
+/// Nao tenta `git rev-list` (requer Child API instavel em Zig 0.16;
+/// CI pode sobrescrever via env XM_BRIDGE_BUILD).
+fn resolveBridgeBuild(b: *std.Build) []u8 {
+    const build_path = "zig-out/.bridge_build";
+    var buf: [16]u8 = undefined;
+    var n: u8 = 0;
+
+    // 1) arquivo zig-out/.bridge_build
+    if (std.Io.Dir.cwd().readFileAlloc(b.graph.io, build_path, b.allocator, .unlimited)) |content| {
+        defer b.allocator.free(content);
+        const trimmed = std.mem.trim(u8, content, " \t\r\n");
+        if (trimmed.len > 0 and trimmed.len < buf.len) {
+            @memcpy(buf[0..trimmed.len], trimmed);
+            n = @intCast(trimmed.len);
+        }
+    } else |_| {}
+
+    // 2) env XM_BRIDGE_BUILD (override; CI define isso para ter valor deterministico)
+    if (n == 0) {
+        if (b.graph.environ_map.get("XM_BRIDGE_BUILD")) |env_val| {
+            if (env_val.len > 0 and env_val.len < buf.len) {
+                @memcpy(buf[0..env_val.len], env_val);
+                n = @intCast(env_val.len);
+            }
+        }
+    }
+
+    // 3) bootstrap "001"
+    if (n == 0) {
+        @memcpy(buf[0..3], "001");
+        n = 3;
+    }
+
+    // Sanitiza: garantir que sao so digitos
+    {
+        var i: usize = 0;
+        var ok = true;
+        while (i < n) : (i += 1) {
+            if (buf[i] < '0' or buf[i] > '9') {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok) {
+            @memcpy(buf[0..3], "001");
+            n = 3;
+        }
+    }
+
+    // Incrementa o contador (auto-bump a cada build)
+    var carry: u16 = 1;
+    var j: usize = n;
+    while (j > 0) {
+        j -= 1;
+        const d: u16 = (buf[j] - '0') + carry;
+        buf[j] = @intCast('0' + (d % 10));
+        carry = d / 10;
+        if (carry == 0) break;
+    }
+
+    // Grava o novo valor no arquivo (best-effort)
+    const updated = buf[0..n];
+    std.Io.Dir.cwd().writeFile(b.graph.io, .{
+        .sub_path = build_path,
+        .data = updated,
+    }) catch {};
+
+    return b.allocator.dupe(u8, updated) catch b.allocator.dupe(u8, "001") catch @panic("OOM");
+}
+
 fn pathExists(b: *std.Build, path: []const u8) bool {
     return !std.meta.isError(std.Io.Dir.cwd().access(b.graph.io, path, .{}));
 }
@@ -147,6 +228,11 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // ---- Bridge executable (Linux/WSL2) ----
+    const bridge_build = resolveBridgeBuild(b);
+    const bridge_options = b.addOptions();
+    bridge_options.addOption([]const u8, "version", BRIDGE_VERSION);
+    bridge_options.addOption([]const u8, "build", bridge_build);
+    bridge_options.addOption([]const u8, "arch", "x86_64-linux-musl");
     const bridge = b.addExecutable(.{
         .name = "bridge",
         .root_module = b.createModule(.{
@@ -154,11 +240,43 @@ pub fn build(b: *std.Build) void {
             .target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .linux }),
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "build_options", .module = bridge_options.createModule() },
+            },
         }),
     });
     const bridge_install = b.addInstallArtifact(bridge, .{});
     const bridge_step = b.step("bridge", "Build the Linux/WSL2 bridge");
     bridge_step.dependOn(&bridge_install.step);
+
+    // ---- Bridge miniroot (gera alpine-bridge-<version>.<build>-x86_64.tar.gz) ----
+    // So executa em WSL/Linux. No Windows, emite aviso e sai OK.
+    // O CI (release.yml job build-linux) gera o miniroot autoritativo.
+    const build_bridge_miniroot = b.step(
+        "build-bridge-miniroot",
+        "Build the Alpine miniroot pre-baked with this bridge version (WSL/Linux only)",
+    );
+    build_bridge_miniroot.dependOn(&bridge_install.step);
+    if (target.result.os.tag == .linux) {
+        const run_bridge_miniroot = b.addSystemCommand(&.{
+            "bash",
+            "scripts/build_miniroot.sh",
+            "--bridge-version",
+            BRIDGE_VERSION,
+            "--bridge-build",
+            bridge_build,
+        });
+        build_bridge_miniroot.dependOn(&run_bridge_miniroot.step);
+    } else {
+        // Em Windows: warning + skip. Dev pode rodar o script manualmente
+        // dentro do WSL: `wsl -d Alpine -- bash /mnt/c/XeMonitor/XeMonitor/scripts/build_miniroot.sh ...`
+        const warn_skip = b.addSystemCommand(&.{
+            "cmd",
+            "/c",
+            "echo AVISO: build-bridge-miniroot so roda em WSL/Linux. Use o CI ou rode manualmente via WSL.",
+        });
+        build_bridge_miniroot.dependOn(&warn_skip.step);
+    }
 
     // Bridge tests (only compiles/runs on Linux due to C headers)
     const bridge_tests = b.addTest(.{

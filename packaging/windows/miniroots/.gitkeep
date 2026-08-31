@@ -1,0 +1,3 @@
+# Mantem a pasta packaging/windows/miniroots/ no git mesmo vazia.
+# Aqui o build (zig build build-bridge-miniroot) deposita os
+# tarballs rolling 10: alpine-bridge-<version>.<build>-x86_64.tar.gz.

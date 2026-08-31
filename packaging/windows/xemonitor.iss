@@ -64,6 +64,10 @@ Source: "..\..\diagnose_windows.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install_windows.bat"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
 Source: "start_bridge.cmd"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
 Source: "start_xemonitor.cmd"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
+; Golden image Alpine (pre-configurada e testada): openrc/kmod/eudev + udev
+; rule CH340 + wsl.conf + init script + bridge. Importada pelo instalador.
+; Permite instalacao offline (sem depender de download do Alpine).
+Source: "..\..\packaging\windows\golden\xemonitor-alpine-3.24.1-x86_64.tar.gz"; DestDir: "{app}\packaging\windows\golden"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\XeMonitor"; Filename: "{app}\{#MyAppExeName}"
@@ -92,6 +96,14 @@ Filename: "{cmd}"; Parameters: "/c schtasks /Run /TN ""XeMonitor-App"""; Flags: 
 Filename: "{cmd}"; Parameters: "/c taskkill /F /IM xemonitor-gui.exe >nul 2>&1 & taskkill /F /IM xemonitor.exe >nul 2>&1"; Flags: skipifdoesntexist
 ; Remove tarefas agendadas. /silent suprime o pause.
 Filename: "{app}\scripts\uninstall_autostart.bat"; Parameters: "/silent"; StatusMsg: "Removendo tarefas agendadas..."
+; Remove a distro WSL 'Alpine' (registro + VHD) deixada pela instalacao, para
+; nao interferir numa futura instalacao. skipifdoesntexist evita erro se nao existe.
+Filename: "{cmd}"; Parameters: "/c wsl --terminate Alpine >nul 2>&1 & wsl --unregister Alpine >nul 2>&1"; Flags: skipifdoesntexist; StatusMsg: "Removendo distro WSL Alpine..."
+
+[UninstallDelete]
+; Fresh total: remove a pasta de config do app (conf + logs + pids) e a install dir.
+Type: filesandordirs; Name: "{userappdata}\xemonitor"
+Type: filesandordirs; Name: "{commonappdata}\XeMonitor"
 
 [Code]
 // Detecta instalacao existente via registro e desinstala automaticamente.

@@ -1,48 +1,55 @@
 @echo off
 :: ============================================================
-:: install_windows.bat v0.7.2 — Instalador Windows do XeMonitor.
-:: 4 fases claras: Windows deps -> Alpine deps -> Alpine config -> Final.
+:: install_windows.bat v0.8.0 - Instalador Windows do XeMonitor.
+:: Fluxo: sanitizacao pre-instalacao -> golden image -> bridge -> final.
 ::
-::  FASE 1  Dependencias Windows + Alpine (WSL2, winget, wget, usbipd, Alpine)
-::  FASE 2  Dependencias Alpine (openrc, kmod, eudev — verificado ANTES de usar)
-::  FASE 3  Copia de arquivos + config Alpine (bridge, init script, udev, wsl.conf)
-::  FASE 4  Configuracao final (servico, binarios, tarefas, USB, scanner)
+::  SANIT    Pre-flight: remove estado residual de instalacao anterior
+::           (distro WSL 'Alpine', %APPDATA%\xemonitor, tarefas) -> fresh.
+::  FASE 1   Dependencias Windows + import do MINIROOT Alpine
+::           (imagem pre-fabricada e testada com o bridge versionado:
+::            openrc, kmod, eudev, udev rule CH340, wsl.conf, init script
+::            e /usr/local/bin/xemonitor-bridge).
+::  FASE 2   (removida) Deps Alpine ja vem pre-baked no miniroot.
+::  FASE 3   (removida) Bridge nao eh mais copiado para o VHD; vem no miniroot.
+::  FASE 4   Servico (svc_enable -> porta 9000) + binarios Windows + tarefas + USB.
 ::
 :: Uso: install_windows.bat [/silent]
 ::   /silent  — Inno Setup ([Run]): nao faz pause. Instalacao existente = auto-reparo.
 :: ============================================================
 setlocal enabledelayedexpansion
-title XeMonitor - Instalar v0.7.2 (Windows)
+title XeMonitor - Instalar v0.8.0 (Windows)
 set "_FATAL=0"
 
 :: ------- Config -------
 set "SILENT=%~1"
-set "APP_DIR=%~dp0"
-if "%APP_DIR:~-1%"=="\" set "APP_DIR=%APP_DIR:~0,-1%"
-if not exist "%APP_DIR%\xemonitor.exe" (
-    if exist "%APP_DIR%\..\..\xemonitor.exe" (
-        pushd "%APP_DIR%\..\.."
-        set "APP_DIR=%CD%"
-        popd
-    ) else if exist "%APP_DIR%\..\..\build.zig" (
-        pushd "%APP_DIR%\..\.."
-        set "APP_DIR=%CD%"
-        popd
-    )
+:: %APP_DIR% = raiz da instalacao = %CD%. Em producao, o Inno Setup roda
+:: este script com WorkingDir={app}. Em testes (staging), scripts\run_install_test.bat
+:: faz cd para o staging root antes de chamar. SEMPRE invocacao explicita;
+:: nenhum auto-detect por path relativo.
+set "APP_DIR=%CD%"
+if not exist "%APP_DIR%\packaging\windows\install_windows.bat" (
+    echo [ERRO] Este script deve ser executado a partir de %%APP_DIR%%.
+    echo        Ex.: C:\Program Files\XeMonitor\packaging\windows\install_windows.bat
+    echo        Em testes: scripts\run_install_test.bat monta o staging e invoca.
+    exit /b 1
 )
 set "INSTALL_DIR=%ProgramFiles%\XeMonitor"
 set "LOG_DIR=%APPDATA%\xemonitor\logs"
-if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+:: LOGFILE e o log oficial (em %APPDATA%). Antes de escrever nele,
+:: precisamos garantir que a pasta %LOG_DIR% existe; mas tambem queremos
+:: poder apagar %APPDATA%\xemonitor na SANITIZACAO. Truque: escrever
+:: num arquivo temporario e copiar para LOGFILE no final.
 set "LOGFILE=%LOG_DIR%\install.log"
-echo DEBUG-LOGFILE=!LOGFILE!>>"%LOG_DIR%\install.log"
+set "TEMP_LOG=%TEMP%\xemonitor-install-%RANDOM%.log"
 set "LOCKFILE=%TEMP%\xemonitor-install.lock"
+call :log "=== XeMonitor installer v0.8.0 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- PID do processo -------
 set "INSTALL_PID="
 for /f "delims=" %%p in ('powershell -NoProfile -Command "[System.Diagnostics.Process]::GetCurrentProcess().Id"') do set "INSTALL_PID=%%p"
 
 :: ------- Log helper -------
-call :log "=== XeMonitor installer v0.7.2 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
+call :log "=== XeMonitor installer v0.8.0 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- Auto-elevacao para Admin -------
 :: NOTA: `net session` pode falhar mesmo para admins (servico SMB/LanmanServer parado).
@@ -75,7 +82,7 @@ if exist "%LOCKFILE%" (
 echo %INSTALL_PID%>"%LOCKFILE%"
 
 echo ==========================================
-echo  XeMonitor v0.7.2 - Instalador Windows
+echo  XeMonitor v0.8.0 - Instalador Windows
 echo ==========================================
 echo.
 call :log "TRACE: Admin OK. IS_ADMIN=%IS_ADMIN%, SILENT=%SILENT%"
@@ -127,6 +134,82 @@ if /i "%MODE%"=="repair" (
 echo TRACE-121-BEFORE
 call :log "TRACE: Fase 0 concluida. MODE=%MODE%, EXISTING=%EXISTING%"
 echo TRACE-121-AFTER
+
+:: ============================================================
+:: 0.5  SANITIZACAO PRE-INSTALACAO (estado limpo)
+:: ============================================================
+:: Todo novo fluxo (install OU repair) comeca por limpar os canais de estado
+:: residual de uma instalacao anterior, para nao interferir na atual:
+::   - processos do app (arquivos podem estar locked)
+::   - distro WSL 'Alpine' (registro + VHD em C:\wsl\Alpine) -> wsl --unregister
+::   - %APPDATA%\xemonitor (conf -> dispara EXISTING=1; logs; pids) -> fresh total
+::   - tarefas agendadas XeMonitor-*
+:: Cada passo e logado e VALIDADO; falha de remocao vira _FATAL (nao trava mudo).
+echo TRACE-SANITIZE-ENTRY
+call :log "=== SANITIZACAO PRE-INSTALACAO iniciada ==="
+set "SAN_ERR=0"
+
+:: [1] Matar processos
+taskkill /F /IM xemonitor-gui.exe >nul 2>&1
+taskkill /F /IM xemonitor.exe >nul 2>&1
+:: Esperar os handles serem liberados antes de tentar rd /s /q.
+ping -n 2 127.0.0.1 >nul
+call :log "Sanitize: processos encerrados (se havia)."
+
+:: [2] Remover distro WSL 'Alpine' + VHD residual
+echo       Sanitizando distro WSL...
+wsl --terminate Alpine >nul 2>&1
+wsl --unregister Alpine >nul 2>&1
+if exist "C:\wsl\Alpine" rd /s /q "C:\wsl\Alpine" >nul 2>&1
+set "SAN_ALPINE=1"
+set "SAN_CMD="
+for /f "delims=" %%l in ('wsl -l -q 2^>nul') do if /i "%%l"=="Alpine" set "SAN_CMD=found"
+if defined SAN_CMD (
+    call :log "SANITIZE-ERRO: distro Alpine ainda registrada apos unregister."
+    echo [ERRO] Nao foi possivel remover a distro WSL 'Alpine'.
+    set "SAN_ERR=1"
+) else (
+    call :log "Sanitize: distro WSL 'Alpine' removida."
+)
+if "!SAN_ERR!"=="1" set "_SAN_FATAL=1"
+
+:: [3] Apagar pasta de config do app (fresh total)
+if exist "%APPDATA%\xemonitor" (
+    rd /s /q "%APPDATA%\xemonitor" >nul 2>&1
+    if exist "%APPDATA%\xemonitor" (
+        call :log "SANITIZE-ERRO: nao foi possivel apagar %APPDATA%\xemonitor."
+        echo [ERRO] Nao foi possivel limpar a config antiga.
+        set "SAN_ERR=1"
+        set "_SAN_FATAL=1"
+    ) else (
+        call :log "Sanitize: %APPDATA%\xemonitor apagado (fresh)."
+    )
+) else (
+    call :log "Sanitize: %APPDATA%\xemonitor inexistente (nada a limpar)."
+)
+:: Recriar pasta de logs (a pasta de config foi apagada; manter log de instalacao)
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
+call :log "Sanitize: pasta de logs recriada."
+
+:: [4] Remover tarefas agendadas (idempotente)
+schtasks /Delete /F /TN "XeMonitor-USB-Attach" >nul 2>&1
+schtasks /Delete /F /TN "XeMonitor-Bridge" >nul 2>&1
+schtasks /Delete /F /TN "XeMonitor-App" >nul 2>&1
+schtasks /Delete /F /TN "XeMonitor-Bridge-Watchdog" >nul 2>&1
+call :log "Sanitize: tarefas XeMonitor-* removidas (se havia)."
+
+if "!_SAN_FATAL!"=="1" (
+    call :log "=== SANITIZACAO FALHOU (residuo nao removido) ==="
+    set "_DIE_RC=1"
+    set "_FATAL=1"
+    goto :die
+)
+call :log "=== SANITIZACAO concluida: estado limpo ==="
+:: Apos limpar config/distro, o modo vira instalacao fresh
+set "EXISTING=0"
+set "MODE=install"
+call :log "TRACE: pos-sanitizacao MODE=%MODE%, EXISTING=%EXISTING%"
+echo TRACE-SANITIZE-DONE
 
 echo TRACE-PHASE1-ENTRY
 :: ============================================================
@@ -294,62 +377,48 @@ if %errorlevel% neq 0 (
 )
 echo.
 
-:: [5] Download Alpine minirootfs
-echo [5/6] Baixando Alpine minirootfs...
-set "ALPINE_BASE=https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64"
-set "TARBALL=%TEMP%\alpine-minirootfs.tar.gz"
+:: [5] Obter miniroot Alpine pre-fabricado (bridge versionado embarcado)
+:: O miniroot vem embutido em %APP_DIR%\packaging\windows\miniroots\ (o Inno
+:: empacota o tarball mais recente). Nome: alpine-bridge-<ver>.<build>-x86_64.tar.gz
+echo [5/6] Obtendo miniroot Alpine (bridge pre-baked)...
+set "MINIROOT_DIR=%APP_DIR%\packaging\windows\miniroots"
+set "TARBALL="
 
-:: Resolve versao mais recente via PowerShell (sem fallback hardcoded)
-for /f "delims=" %%f in ('powershell -NoProfile -Command "try { $y = (Invoke-WebRequest -UseBasicParsing -Uri '%ALPINE_BASE%/latest-releases.yaml' -TimeoutSec 30).Content; if ($y -match 'file: (alpine-minirootfs-[\d.]+-x86_64\.tar\.gz)') { $Matches[1] } else { exit 1 } } catch { exit 1 }" 2^>nul') do set "ALPINE_FILE=%%f"
-if not defined ALPINE_FILE (
-    call :log "ERRO: falha ao resolver versao latest do Alpine."
-    echo [ERRO] Nao foi possivel obter versao latest do Alpine.
+:: Procurar o tarball mais recente em %MINIROOT_DIR%
+for /f "delims=" %%F in ('dir /b /od /a-d "%MINIROOT_DIR%\alpine-bridge-*.tar.gz" 2^>nul') do set "LATEST_MINIROOT=%%F"
+if defined LATEST_MINIROOT (
+    set "MINIROOT_IMG=%MINIROOT_DIR%\!LATEST_MINIROOT!"
+    set "TARBALL=%TEMP%\!LATEST_MINIROOT!"
+) else (
+    call :log "ERRO: nenhum miniroot em %MINIROOT_DIR%."
+    echo [ERRO] Miniroot Alpine nao encontrado. Reinstale o pacote.
+    set "_DIE_RC=1"
+    set "_FATAL=1"
+    goto :skip_miniroot_select
+)
+call :log "Miniroot selecionado: !MINIROOT_IMG!"
+echo       Usando miniroot !LATEST_MINIROOT! (bridge pre-baked).
+copy /Y "!MINIROOT_IMG!" "!TARBALL!" >nul 2>&1
+if !errorlevel! neq 0 (
+    call :log "ERRO: nao foi possivel copiar miniroot para temp."
     set "_DIE_RC=1"
     set "_FATAL=1"
 )
+:skip_miniroot_select
+call :log "Tarball miniroot: !TARBALL!"
 if "!_FATAL!"=="1" goto :die
-set "ALPINE_URL=%ALPINE_BASE%/%ALPINE_FILE%"
-call :log "Alpine URL: %ALPINE_URL%"
-
-if exist "%TARBALL%" (
-    call :log "Tarball ja existe: %TARBALL%"
-    echo       Tarball ja existe: %ALPINE_FILE%
-) else (
-    echo       Baixando %ALPINE_FILE%...
-    if defined WGET (
-        call :log "Download via wget: %ALPINE_URL%"
-        "%WGET%" --progress=bar:force -c "%ALPINE_URL%" -O "%TARBALL%"
-    ) else (
-        call :log "Download via Invoke-WebRequest: %ALPINE_URL%"
-        powershell -NoProfile -Command "Invoke-WebRequest -Uri '%ALPINE_URL%' -OutFile '%TARBALL%' -UseBasicParsing"
-    )
-    if !errorlevel! neq 0 (
-        call :log "ERRO: falha no download do Alpine."
-        echo [ERRO] Falha ao baixar Alpine. Verifique sua conexao.
-        set "_DIE_RC=1"
-        set "_FATAL=1"
-    )
-    if not "!_FATAL!"=="1" echo       Download concluido.
-)
+echo.
 if "!_FATAL!"=="1" goto :die
 echo.
 
-:: [6] Import Alpine (sempre fresh)
-echo [6/6] Preparando Alpine (fresh)...
-:: Remove Alpine existente (se houver) para garantir estado limpo
-call :runwsl alpine_check 60 distro_ok
-if !WSL_RC! equ 0 (
-    call :log "Alpine existente. Removendo para instalacao fresh..."
-    echo       Removendo Alpine existente...
-    wsl --unregister Alpine >nul 2>&1
-)
-:: Importa fresh
-echo       Importando Alpine fresh...
+:: [6] Import Alpine (imagem miniroot pre-fabricada e versionada pelo bridge)
+echo [6/6] Importando Alpine miniroot (bridge pre-baked)...
+set "DISTRO=Alpine"
 set "XEMONITOR_TARBALL=%TARBALL%"
 call :runwsl import_alpine 300 import_alpine
 if !WSL_RC! neq 0 (
     call :log "ERRO: falha ao importar Alpine rc=!WSL_RC!"
-    echo [ERRO] Nao foi possivel importar Alpine.
+    echo [ERRO] Nao foi possivel importar o miniroot Alpine.
     set "_DIE_RC=1"
     set "_FATAL=1"
 )
@@ -362,205 +431,35 @@ if !WSL_RC! neq 0 (
     set "_FATAL=1"
 )
 if "!_FATAL!"=="1" goto :die
-set "DISTRO=Alpine"
 call :runwsl set_default 60 set_default
 call :log "Distro WSL: %DISTRO%"
-echo       Alpine pronto (fresh).
+echo       Alpine pronto (miniroot).
 echo.
 call :log "=== FASE 1 concluida ==="
 
 :: ============================================================
-:: FASE 2/4: Dependencias Alpine (openrc, kmod, eudev)
+:: (FASE 2 removida) Dependencias Alpine (openrc, kmod, eudev)
+:: Ja vienen prontas na GOLDEN IMAGE (imagem pre-configurada e testada).
+:: Nao roda mais apk durante a instalacao -> instalacao mais rapida e
+:: menos sujeita a falhas de rede.
 :: ============================================================
-echo ==========================================
-echo  FASE 2/4: Dependencias Alpine
-echo ==========================================
-echo.
-
-:: [1] Gerar script de deps via echo
-set "DEPS_SH=%TEMP%\xemonitor-setup-deps.sh"
-if "%TEMP%"=="" set "DEPS_SH=%USERPROFILE%\AppData\Local\Temp\xemonitor-setup-deps.sh"
-call :log "Gerando %DEPS_SH% (TEMP=%TEMP%)..."
-> "%DEPS_SH%" echo #!/bin/sh
->> "%DEPS_SH%" echo set -e
->> "%DEPS_SH%" echo echo '[deps] Instalando openrc, kmod, eudev...'
->> "%DEPS_SH%" echo apk update
->> "%DEPS_SH%" echo apk add --no-cache openrc kmod eudev
->> "%DEPS_SH%" echo echo '[deps] Criando /run/openrc/softlevel...'
->> "%DEPS_SH%" echo mkdir -p /run/openrc
->> "%DEPS_SH%" echo touch /run/openrc/softlevel
->> "%DEPS_SH%" echo echo '[deps] Verificando instalacao...'
->> "%DEPS_SH%" echo command -v rc-service ^> /dev/null 2^>^&1 ^|^| { echo 'ERRO: openrc nao instalado'; exit 1; }
->> "%DEPS_SH%" echo command -v modprobe ^> /dev/null 2^>^&1 ^|^| { echo 'ERRO: kmod nao instalado'; exit 1; }
->> "%DEPS_SH%" echo echo '[deps] OK: dependencias do Alpine instaladas.'
-echo       Script gerado: %DEPS_SH%
-
-:: [2] Copiar ao Alpine
-call :log "TRACE: antes to_wsl_path. DEPS_SH='%DEPS_SH%'"
-call :to_wsl_path "%DEPS_SH%" DEPS_WSL
-if "!DEPS_WSL!"=="" (
-    call :log "ERRO: to_wsl_path falhou para %DEPS_SH%."
-    echo [ERRO] Falha ao converter caminho para WSL.
-    set "_DIE_RC=1"
-    set "_FATAL=1"
-)
-if "!_FATAL!"=="1" goto :die
-set "XEMONITOR_SRC=!DEPS_WSL!"
-set "XEMONITOR_DEST=/tmp/xemonitor-setup-deps.sh"
-call :runwsl copy_deps 30 copy_file
-if !WSL_RC! neq 0 (
-    call :log "ERRO: falha ao copiar deps script rc=!WSL_RC!"
-    echo [ERRO] Falha ao copiar script para Alpine.
-    set "_DIE_RC=1"
-    set "_FATAL=1"
-)
-if "!_FATAL!"=="1" goto :die
-
-:: [3] Executar - XEMONITOR_SRC deve ser o caminho DENTRO do Alpine
-set "XEMONITOR_SRC=/tmp/xemonitor-setup-deps.sh"
-call :runwsl exec_deps 120 run_script
-if !WSL_RC! neq 0 (
-    call :log "ERRO: deps script falhou rc=!WSL_RC!"
-    echo [ERRO] Falha ao instalar dependencias no Alpine.
-    set "_DIE_RC=1"
-    set "_FATAL=1"
-)
-if "!_FATAL!"=="1" goto :die
-echo       Dependencias Alpine instaladas: openrc, kmod, eudev.
-echo.
-call :log "=== FASE 2 concluida ==="
 
 echo TRACE-PHASE3-ENTRY
 :: ============================================================
-:: FASE 3/4: Copia de Arquivos + Config Alpine
+:: FASE 3/4: REMOVIDA
+:: O miniroot ja vem com a versao EXATA do bridge (pre-baked e validada
+:: no build via scripts/build_miniroot.sh). Nao ha mais copia de bridge
+:: para o VHD: o bridge dentro do Alpine eh o que vai rodar, e a Inno
+:: Setup substituiu o bridge em %APP_DIR%\bridge pela mesma versao.
+:: Bumps de bridge = nova compilacao + geracao de miniroot + nova release.
 :: ============================================================
+call :log "FASE 3 suprimida: bridge vem pre-baked no miniroot."
 echo ==========================================
-echo  FASE 3/4: Copia de Arquivos + Config
+echo  FASE 3/4: (suprimida)
 echo ==========================================
+echo       bridge ja esta pre-baked no miniroot importado.
 echo.
-
-:: [1] Copiar bridge
-echo [1/4] Copiando bridge para Alpine...
-if exist "%APP_DIR%\bridge" (
-    call :to_wsl_path "%APP_DIR%\bridge" BRIDGE_WSL
-    if "!BRIDGE_WSL!"=="" (
-        call :log "ERRO: to_wsl_path falhou para bridge."
-        echo [ERRO] Falha ao converter caminho do bridge.
-        set "_DIE_RC=1"
-        set "_FATAL=1"
-    ) else (
-    set "XEMONITOR_SRC=!BRIDGE_WSL!"
-    set "XEMONITOR_DEST=/usr/local/bin/xemonitor-bridge"
-    call :runwsl copy_bridge 30 copy_file
-    if !WSL_RC! neq 0 (
-        call :log "ERRO: falha ao copiar bridge rc=!WSL_RC!"
-        echo [ERRO] Falha ao copiar bridge - bridge nao podera rodar.
-        set "_DIE_RC=1"
-        set "_FATAL=1"
-    ) else (
-        call :log "Bridge copiado."
-        echo       bridge copiado.
-    )
-    )
-) else (
-    call :log "ERRO: bridge nao encontrado em %APP_DIR%."
-    echo [ERRO] bridge nao encontrado em %APP_DIR% - falta build do bridge.
-    set "_DIE_RC=1"
-    set "_FATAL=1"
-)
-if "!_FATAL!"=="1" goto :die
-
-:: [2] Copiar init script OpenRC
-echo [2/4] Copiando init script OpenRC...
-if exist "%APP_DIR%\openrc\xemonitor-bridge" (
-    call :to_wsl_path "%APP_DIR%\openrc\xemonitor-bridge" O_WSL
-    if "!O_WSL!"=="" (
-        call :log "ERRO: to_wsl_path falhou para init script."
-        echo [ERRO] Falha ao converter caminho do init script.
-        set "_DIE_RC=1"
-        set "_FATAL=1"
-    ) else (
-    set "XEMONITOR_SRC=!O_WSL!"
-    set "XEMONITOR_DEST=/etc/init.d/xemonitor-bridge"
-    call :runwsl copy_openrc 30 copy_file
-    if !WSL_RC! neq 0 (
-        call :log "ERRO: falha ao copiar init script rc=!WSL_RC!"
-        echo [ERRO] Falha ao copiar init script OpenRC - servico nao podera iniciar.
-        set "_DIE_RC=1"
-        set "_FATAL=1"
-    ) else (
-        call :log "Init script OpenRC copiado."
-        echo       init script copiado.
-    )
-    )
-) else (
-    call :log "AVISO: openrc/xemonitor-bridge nao encontrado."
-    echo [AVISO] openrc/xemonitor-bridge nao encontrado - bridge nao tera init script.
-)
-if "!_FATAL!"=="1" goto :die
-
-:: [3] Copiar systemd unit (fallback Arch/systemd)
-if exist "%APP_DIR%\systemd\xemonitor-bridge.service" (
-    call :to_wsl_path "%APP_DIR%\systemd\xemonitor-bridge.service" S_WSL
-    if not "!S_WSL!"=="" (
-        set "XEMONITOR_SRC=!S_WSL!"
-        set "XEMONITOR_DEST=/etc/systemd/system/xemonitor-bridge.service"
-        call :runwsl copy_systemd 30 copy_file
-    )
-)
-
-:: [4] Gerar script de config + executar
-echo [3/4] Gerando script de configuracao Alpine...
-set "CFG_SH=%TEMP%\xemonitor-setup-config.sh"
-if "%TEMP%"=="" set "CFG_SH=%USERPROFILE%\AppData\Local\Temp\xemonitor-setup-config.sh"
-> "%CFG_SH%" echo #!/bin/sh
->> "%CFG_SH%" echo set -e
->> "%CFG_SH%" echo echo '[config] Criando regra udev CH340...'
->> "%CFG_SH%" echo mkdir -p /etc/udev/rules.d
->> "%CFG_SH%" echo echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE=="0666"' ^> /etc/udev/rules.d/99-ch340.rules
->> "%CFG_SH%" echo echo '[config] Configurando wsl.conf...'
->> "%CFG_SH%" echo printf '[boot]\ncommand = /sbin/modprobe usbip-core ^&^& /sbin/modprobe vhci-hcd ^&^& /sbin/modprobe ch341\n' ^> /etc/wsl.conf
->> "%CFG_SH%" echo echo '[config] Carregando modulos...'
->> "%CFG_SH%" echo modprobe usbip-core 2^>/dev/null ^|^| true
->> "%CFG_SH%" echo modprobe vhci-hcd 2^>/dev/null ^|^| true
->> "%CFG_SH%" echo modprobe ch341 2^>/dev/null ^|^| true
->> "%CFG_SH%" echo echo '[config] Reload udev...'
->> "%CFG_SH%" echo udevadm control --reload-rules 2^>/dev/null ^|^| true
->> "%CFG_SH%" echo udevadm trigger 2^>/dev/null ^|^| true
->> "%CFG_SH%" echo echo '[config] OK: configuracao do Alpine concluida.'
-
-call :to_wsl_path "%CFG_SH%" CFG_WSL
-if "!CFG_WSL!"=="" (
-    call :log "ERRO: to_wsl_path falhou para config script."
-    echo [ERRO] Falha ao converter caminho do script de configuracao.
-    set "_DIE_RC=1"
-    set "_FATAL=1"
-)
-if "!_FATAL!"=="1" goto :die
-set "XEMONITOR_SRC=!CFG_WSL!"
-set "XEMONITOR_DEST=/tmp/xemonitor-setup-config.sh"
-call :runwsl copy_config 30 copy_file
-if !WSL_RC! neq 0 (
-    call :log "ERRO: falha ao copiar config script."
-    echo [ERRO] Falha ao copiar script de configuracao.
-    set "_DIE_RC=1"
-    set "_FATAL=1"
-)
-if "!_FATAL!"=="1" goto :die
-
-echo [4/4] Executando configuracao Alpine...
-set "XEMONITOR_SRC=/tmp/xemonitor-setup-config.sh"
-call :runwsl exec_config 60 run_script
-if !WSL_RC! neq 0 (
-    call :log "ERRO: config script falhou rc=!WSL_RC!"
-    echo [ERRO] Falha ao configurar Alpine.
-    set "_DIE_RC=1"
-    set "_FATAL=1"
-)
-if "!_FATAL!"=="1" goto :die
-echo       Alpine configurado: udev + wsl.conf + modulos.
-echo.
-call :log "=== FASE 3 concluida ==="
+call :log "=== FASE 3 concluida (no-op) ==="
 
 :: ============================================================
 :: FASE 4/4: Configuracao Final
@@ -702,7 +601,7 @@ if !WSL_RC! equ 0 (
 
 :: [6] Resumo
 echo ==========================================
-echo  Instalacao v0.7.2 concluida!
+echo  Instalacao v0.8.0 concluida!
 echo.
 echo   Instalado em:   %INSTALL_DIR%
 echo   Distro WSL:     %DISTRO% (Alpine/OpenRC)
@@ -717,6 +616,11 @@ echo  Para remover:    scripts\uninstall_autostart.bat + apagar %INSTALL_DIR%
 echo ==========================================
 del "%LOCKFILE%" >nul 2>&1
 call :log "Instalador concluido (pid=%INSTALL_PID%, modo=%MODE%)."
+:: Move o log temporario para o log oficial (so agora, apos a sanitizacao).
+if exist "%TEMP_LOG%" (
+    if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" 2>nul
+    move /Y "%TEMP_LOG%" "%LOGFILE%" >nul 2>&1
+)
 call :pause_helper
 exit /b 0
 
@@ -725,6 +629,11 @@ exit /b 0
 :: ============================================================
 :die
 del "%LOCKFILE%" >nul 2>&1
+:: Move o log temporario para o oficial (mesmo em caso de erro).
+if exist "%TEMP_LOG%" (
+    if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" 2>nul
+    move /Y "%TEMP_LOG%" "%LOGFILE%" >nul 2>&1
+)
 call :pause_helper
 if not defined _DIE_RC set "_DIE_RC=1"
 exit /b %_DIE_RC%
@@ -765,10 +674,13 @@ exit /b 0
 
 :: ============================================================
 :: :log - append de mensagem no LOGFILE
+:: Escreve em %TEMP_LOG% (arquivo temporario) e so no final o conteudo
+:: e movido para %LOGFILE%. Isso permite que a SANITIZACAO apague
+:: %APPDATA%\xemonitor sem conflito com o bat tendo o log aberto.
 :: ============================================================
 :log
-if not defined LOGFILE exit /b 0
-echo %date% %time%  %*>>"%LOGFILE%"
+if not defined TEMP_LOG exit /b 0
+echo %date% %time%  %*>>"%TEMP_LOG%"
 exit /b 0
 
 :: ============================================================

@@ -56,6 +56,23 @@ const TIOCM_RNG: c_int = 0x080;
 const TIOCM_GET: c_ulong = 0x5415;
 const TIOCM_BIS: c_ulong = 0x5417;
 
+/// Versao do bridge, injetada via `@import("build_options")` (build.zig -> addOptions).
+/// Default "dev" se o modulo nao estiver disponivel (build manual via `zig run`).
+const build_options = @import("build_options");
+const BRIDGE_VERSION: []const u8 = build_options.version;
+/// Contador de build (3+ digitos), injetado via build_options.build.
+const BRIDGE_BUILD: []const u8 = build_options.build;
+/// Target fixo do bridge (sempre x86_64-musl).
+const BRIDGE_ARCH: []const u8 = build_options.arch;
+
+/// Versao completa no formato `MAJOR.MINOR.PATCH.bridge_build` (machine-readable).
+/// Ex.: "0.8.0.001".
+fn versionFull() []const u8 {
+    // Concatena BRIDGE_VERSION + "." + BRIDGE_BUILD uma unica vez (estatico).
+    // Usado por --print-version e pelo nome do miniroot estatico.
+    return BRIDGE_VERSION ++ "." ++ BRIDGE_BUILD;
+}
+
 var verbose: bool = false;
 
 /// Auto-detecta o device USB-serial. Ordem:
@@ -554,6 +571,33 @@ pub fn main(init: std.process.Init) !u8 {
         const path = autoDetectSerial(io_inst, gpa);
         defer gpa.free(path);
         std.debug.print("{s}\n", .{path});
+        return 0;
+    }
+
+    // --version / -v : imprime versao humana (single-line) e sai.
+    if (args.len >= 2 and (std.mem.eql(u8, args[1], "--version") or std.mem.eql(u8, args[1], "-v"))) {
+        std.debug.print("Xe. {s} bridge {s}\n", .{ BRIDGE_VERSION, BRIDGE_BUILD });
+        return 0;
+    }
+
+    // --print-version: imprime versao machine-readable (MAJOR.MINOR.PATCH.build) e sai.
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--print-version")) {
+        std.debug.print("{s}\n", .{versionFull()});
+        return 0;
+    }
+
+    // --print-arch: imprime arquitetura (x86_64-linux-musl) e sai.
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--print-arch")) {
+        std.debug.print("{s}\n", .{BRIDGE_ARCH});
+        return 0;
+    }
+
+    // --version-json: imprime JSON com version, build e arch. Para automacao.
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--version-json")) {
+        std.debug.print(
+            \\{{"version":"{s}","bridge_build":"{s}","arch":"{s}"}}
+        , .{ BRIDGE_VERSION, BRIDGE_BUILD, BRIDGE_ARCH });
+        std.debug.print("\n", .{});
         return 0;
     }
 
