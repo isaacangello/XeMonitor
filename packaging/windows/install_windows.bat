@@ -454,6 +454,47 @@ echo.
 call :log "=== FASE 1 concluida ==="
 
 :: ============================================================
+:: [7] Configurar device persistente no Alpine
+:: ============================================================
+echo [7/7] Configurando device persistente no Alpine...
+set "DETECTED_DEVICE="
+
+:: 1. Detectar device no Windows (via WMI)
+for /f "tokens=2 delims==" %%I in ('wmic path Win32_PnPEntity where "DeviceID like '%%VID_1A86%%'" get DeviceID /value 2^>nul') do (
+    set "DETECTED_DEVICE=%%I"
+)
+
+:: Fallback: setup_usb.bat
+if not defined DETECTED_DEVICE if exist "%APP_DIR%\setup_usb.bat" (
+    for /f "tokens=*" %%I in ('cmd /c "%APP_DIR%\setup_usb.bat" --detect-device 2^>nul') do (
+        set "DETECTED_DEVICE=%%I"
+    )
+)
+
+if defined DETECTED_DEVICE (
+    :: Converter para path by-id persistente
+    set "ALPINE_DEVICE=/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+    
+    :: Tentar resolver ID real no Alpine
+    for /f "tokens=*" %%I in ('wsl -d Alpine -u root -- sh -c "ls /dev/serial/by-id/ 2>/dev/null | grep -i 1a86 | head -1" 2^>nul') do (
+        set "ALPINE_DEVICE=/dev/serial/by-id/%%I"
+    )
+    
+    :: Gravar no Alpine
+    wsl -d Alpine -u root -- sh -c "mkdir -p /etc/xemonitor && echo DEVICE=%ALPINE_DEVICE% > /etc/xemonitor/device"
+    if !errorlevel! equ 0 (
+        call :log "Device persistente configurado: %ALPINE_DEVICE%"
+    ) else (
+        call :log "AVISO: falha ao gravar /etc/xemonitor/device no Alpine"
+    )
+    
+    :: Criar /etc/conf.d/xemonitor-bridge para OpenRC
+    wsl -d Alpine -u root -- sh -c "echo device=%ALPINE_DEVICE% > /etc/conf.d/xemonitor-bridge"
+) else (
+    call :log "AVISO: device nao detectado no Windows, bridge fara auto-detect"
+)
+
+:: ============================================================
 :: (FASE 2 removida) Dependencias Alpine (openrc, kmod, eudev)
 :: Ja vienen prontas na GOLDEN IMAGE (imagem pre-configurada e testada).
 :: Nao roda mais apk durante a instalacao -> instalacao mais rapida e

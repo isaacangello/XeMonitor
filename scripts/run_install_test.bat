@@ -3,18 +3,18 @@
 :: run_install_test.bat - Wrapper de teste E2E do instalador.
 :: Monta o staging dir, faz cd para a raiz dele (= WorkingDir
 :: que o Inno usa em producao) e chama install_windows.bat /silent
-:: elevado, redirecionando stdout/stderr para um arquivo de log.
+:: em modo degradado (sem UAC), redirecionando stdout/stderr para arquivo de log.
 ::
 :: Uso (a partir da raiz do repo):
 ::   scripts\run_install_test.bat
 ::
 :: Log gerado em:
-::   %APPDATA%\xemonitor\logs\install-test-<YYYYMMDD-HHMMSS>.txt
+::   %TEMP%\xemonitor-install-test-<YYYYMMDD-HHMMSS>.txt
 :: ============================================================
 setlocal enabledelayedexpansion
 
 set "ROOT=%~dp0.."
-pushd "%ROOT%"
+cd /d "%ROOT%"
 
 echo [run_test] Root: %ROOT%
 
@@ -39,7 +39,6 @@ if exist "%STAGING%\packaging\windows\install_windows.bat" (
 )
 if not exist "%STAGING%\packaging\windows\install_windows.bat" (
     echo [run_test] ERRO: staging nao foi criado em %STAGING%
-    popd
     exit /b 1
 )
 
@@ -61,18 +60,15 @@ echo set XM_SKIP_ELEVATE=1>>"%WRAPPER%"
 echo call "%STAGING%\packaging\windows\install_windows.bat" /silent>>"%WRAPPER%"
 echo echo EXIT=%%errorlevel%%>>"%WRAPPER%"
 
-:: 4) Subir o wrapper. Se XM_FORCE_RUNAS=1 (padrao), tenta RunAs; senao
-;; (ambiente ja admin OU modo degradado XM_SKIP_ELEVATE=1), roda direto.
-if defined XM_NO_RUNAS goto :run_direct
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$p = Start-Process -FilePath '%WRAPPER%' -Verb RunAs -PassThru -Wait; exit $p.ExitCode" ^
-    > "%LOGFILE%" 2>&1
-set "RC=%errorlevel%"
-goto :run_done
-:run_direct
-cmd /c "%WRAPPER%" > "%LOGFILE%" 2>&1
-set "RC=%errorlevel%"
-:run_done
+:: 4) Subir o wrapper. XM_NO_RUNAS=1 roda direto sem RunAs.
+if defined XM_NO_RUNAS (
+    cmd /c "%WRAPPER%" > "%LOGFILE%" 2>&1
+    set "RC=%errorlevel%"
+) else (
+    :: Usar runas.exe nativo do Windows para elevacao
+    runas /user:Administrator "%WRAPPER%" > "%LOGFILE%" 2>&1
+    set "RC=%errorlevel%"
+)
 
 :: Limpa wrapper
 del "%WRAPPER%" 2>nul
@@ -80,5 +76,4 @@ del "%WRAPPER%" 2>nul
 echo [run_test] exit code: %RC%
 echo [run_test] log:       %LOGFILE%
 
-popd
 exit /b %RC%

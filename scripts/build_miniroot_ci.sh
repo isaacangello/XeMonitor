@@ -96,6 +96,22 @@ fi
 rc-service xemonitor-bridge stop
 '
 
+# Garantir estrutura de config no miniroot
+docker exec "$CONTAINER" sh -c '
+    mkdir -p /etc/xemonitor /etc/conf.d
+    touch /etc/xemonitor/device
+    touch /etc/conf.d/xemonitor-bridge
+    # Regra udev para criar symlink /dev/serial/by-id/... persistente
+    if [ ! -f /etc/udev/rules.d/60-persistent-serial.rules ]; then
+        cat > /etc/udev/rules.d/60-persistent-serial.rules <<'"'"'EOF
+# Persistent serial device symlinks for CH340
+ACTION=="add", SUBSYSTEM=="tty", SUBSYSTEMS=="usb", \
+  ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
+  SYMLINK+="serial/by-id/usb-1a86_USB_Serial-if00-port0"
+EOF
+    fi
+'
+
 # Exporta o filesystem do container como tarball
 echo "[miniroot-ci] exportando $TARBALL_PATH..."
 mkdir -p "$OUT_DIR"

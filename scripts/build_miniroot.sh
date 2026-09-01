@@ -222,6 +222,25 @@ SIZE=$(stat -c '%s' "$TARBALL_PATH" 2>/dev/null || stat -f '%z' "$TARBALL_PATH" 
 SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc 2>/dev/null || echo "?")
 echo "[miniroot] OK: ${TARBALL_NAME} gerado (${SIZE_MB} MB)"
 
+# ---- 5.5) Garantir estrutura de config + regra udev persistente no miniroot ----
+echo "[miniroot] garantindo dirs de config + regra udev persistente..."
+$WSL_EXE -d "$DISTRO" -u root -- sh -c "
+    mkdir -p /etc/xemonitor /etc/conf.d
+    # Garantir arquivos de config (vazios - serao preenchidos na instalacao)
+    touch /etc/xemonitor/device
+    touch /etc/conf.d/xemonitor-bridge
+    # Regra udev para criar symlink /dev/serial/by-id/... persistente
+    if [ ! -f /etc/udev/rules.d/60-persistent-serial.rules ]; then
+        cat > /etc/udev/rules.d/60-persistent-serial.rules <<'EOF'
+# Persistent serial device symlinks for CH340
+ACTION=="add", SUBSYSTEM=="tty", SUBSYSTEMS=="usb", \
+  ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
+  SYMLINK+="serial/by-id/usb-1a86_USB_Serial-if00-port0"
+EOF
+    fi
+"
+echo "[miniroot] dirs de config + regra udev OK"
+
 # ---- 6) Rolling 10 (apaga os mais antigos alem de 10) ----
 # Lista os tarballs por mtime desc, mantem os 10 primeiros, apaga o resto.
 echo "[miniroot] aplicando rolling 10 em $OUT_DIR..."

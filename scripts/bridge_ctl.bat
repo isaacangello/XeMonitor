@@ -78,12 +78,50 @@ if !errorlevel! neq 0 (
 exit /b !errorlevel!
 
 :rc_enable
+:: Verificar/criar config persistente antes de habilitar
+%RUN% sh -c "
+    if [ ! -f /etc/xemonitor/device ]; then
+        echo '[bridge_ctl] /etc/xemonitor/device nao encontrado, auto-detectando...'
+        DEVICE=\$(ls /dev/serial/by-id/ 2>/dev/null | grep -i 1a86 | head -1)
+        if [ -n \"\$DEVICE\" ]; then
+            mkdir -p /etc/xemonitor
+            echo \"DEVICE=/dev/serial/by-id/\$DEVICE\" > /etc/xemonitor/device
+            echo \"device=/dev/serial/by-id/\$DEVICE\" > /etc/conf.d/xemonitor-bridge
+            echo '[bridge_ctl] Config criado: '\$DEVICE
+        else
+            # Fallback: scan via udevadm
+            for tty in /dev/ttyUSB*; do
+                [ -e \"\$tty\" ] || continue
+                udevadm info -a -n \"\$tty\" 2>/dev/null | grep -q \"1a86\" && {
+                    mkdir -p /etc/xemonitor
+                    echo \"DEVICE=\$tty\" > /etc/xemonitor/device
+                    echo \"device=\$tty\" > /etc/conf.d/xemonitor-bridge
+                    echo '[bridge_ctl] Config criado via udevadm: '\$tty
+                    break
+                }
+            done
+        fi
+    fi
+"
 %RUN% rc-update add xemonitor-bridge default
 exit /b !errorlevel!
 
 :rc_dev
-:: Verifica se o scanner USB-Serial (CH340) esta presente no WSL
-%RUN% sh -c "test -c /dev/ttyUSB0"
+:: Verifica se scanner USB-Serial (CH340) esta presente no WSL
+%RUN% sh -c "
+    if [ -c /dev/ttyUSB0 ]; then
+        echo '[bridge_ctl] /dev/ttyUSB0 OK'
+        # Tentar resolver path persistente
+        for f in /dev/serial/by-id/usb-1a86*; do
+            if [ -e \"\$f\" ]; then
+                echo '[bridge_ctl] Device persistente: '\$f
+                break
+            fi
+        done
+    else
+        echo '[bridge_ctl] /dev/ttyUSB0 nao encontrado'
+    fi
+"
 exit /b !errorlevel!
 
 :rc_ch341

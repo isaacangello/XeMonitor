@@ -14,8 +14,9 @@ command="/usr/local/bin/xemonitor-bridge"
 command_background="yes"
 command_user="root"
 pidfile="/run/${RC_SVCNAME}.pid"
-# command_opts é populado em start() a partir de /etc/xemonitor/device
-# (gravado pelo install.sh) ou /etc/conf.d/xemonitor-bridge (override manual).
+# command_opts é populado em start_pre() a partir de /etc/xemonitor/device
+# (gravado pelo install.sh/install_windows.bat) ou /etc/conf.d/xemonitor-bridge (override manual).
+# Fallback: auto-detecta CH340 via by-id -> udevadm -> /dev/ttyUSB0
 command_args="--device ${device:-/dev/ttyUSB0}"
 
 depend() {
@@ -26,12 +27,43 @@ depend() {
 }
 
 start_pre() {
-    # Se /etc/xemonitor/device existe, source para pegar DEVICE=...
+    # 1. Config existente válida?
     if [ -f /etc/xemonitor/device ]; then
         . /etc/xemonitor/device
-        if [ -n "${DEVICE:-}" ]; then
+        if [ -n "${DEVICE:-}" ] && [ -e "${DEVICE}" ]; then
             command_args="--device ${DEVICE}"
+            return 0
         fi
+    fi
+
+    # 2. Auto-detectar CH340 (múltiplas estratégias)
+    local dev=""
+
+    # 2a. by-id persistente (udev) - preferido
+    for d in /dev/serial/by-id/usb-1a86*; do
+        [ -e "$d" ] && { dev="$d"; break; }
+    done
+
+    # 2b. Scan via udevadm (vendor 1a86 = CH340)
+    if [ -z "$dev" ]; then
+        for tty in /dev/ttyUSB*; do
+            [ -e "$tty" ] || continue
+            udevadm info -a -n "$tty" 2>/dev/null | grep -q "1a86" && { dev="$tty"; break; }
+        done
+    done
+
+    # 2c. Fallback padrão
+    [ -z "$dev" ] && [ -e /dev/ttyUSB0 ] && dev="/dev/ttyUSB0"
+
+    # 3. Usar device detectado
+    if [ -n "$dev" ] && [ -e "$dev" ]; then
+        command_args="--device $dev"
+        # Persistir para próximas boots
+        mkdir -p /etc/xemonitor
+        echo "DEVICE=$dev" > /etc/xemonitor/device
+        echo "device=$dev" > /etc/conf.d/xemonitor-bridge
+    else
+        command_args="--device /dev/ttyUSB0"  # último recurso
     fi
     return 0
 }
