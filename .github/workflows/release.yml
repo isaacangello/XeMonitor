@@ -48,6 +48,30 @@ jobs:
         run: |
           bash install.sh --check-only
 
+      - name: Build miniroot Alpine (pre-baked with this bridge)
+        run: |
+          bash scripts/build_miniroot_ci.sh \
+            --bridge-version "0.8.0" \
+            --bridge-build  "${{ github.ref_name }}" \
+            --bridge        "zig-out/bin/bridge" \
+            --init          "openrc/xemonitor-bridge" \
+            --out-dir       "packaging/windows/miniroots"
+        # O ref_name v* vira o "build" do miniroot (ex: v0.8.0 -> bridge 0.8.0.v0.8.0)
+        # e a release tag vira o nome do tarball (alpine-bridge-0.8.0.v0.8.0-...tar.gz).
+        # Se preferir build numerico, troque "${{ github.ref_name }}" por um counter.
+      - name: Prepare miniroot for Inno Setup (copy as alpine-bridge-current.tar.gz)
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare_miniroot_for_iss.ps1
+        shell: pwsh
+
+      - name: Upload miniroot artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: miniroot-bridge
+          path: |
+            packaging/windows/miniroots/alpine-bridge-*.tar.gz
+            packaging/windows/miniroots/alpine-bridge-current.tar.gz
+
       - name: Package release tarball
         run: |
           mkdir -p dist
@@ -122,6 +146,12 @@ jobs:
       - name: Build bridge (x86_64-linux-musl)
         run: '& "$env:ZIG_PATH\zig.exe" build bridge -Dtarget=x86_64-linux-musl -Doptimize=ReleaseSafe'
         shell: pwsh
+
+      - name: Download miniroot from build-linux
+        uses: actions/download-artifact@v4
+        with:
+          name: miniroot-bridge
+          path: packaging/windows/miniroots
 
       - name: Copy Windows binaries to dist
         run: |

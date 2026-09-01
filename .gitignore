@@ -25,6 +25,9 @@ tmp/
 # IDE
 .idea/
 
+# opencode
+opencode.json
+
 # Dependências / downloads manuais
 zig-pkg/
 2706121.pdf
