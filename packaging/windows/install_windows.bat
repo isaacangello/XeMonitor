@@ -65,7 +65,19 @@ if "%IS_ADMIN%"=="0" (
         set "_DIE_RC=0"
     )
 )
-if "%IS_ADMIN%"=="0" goto :die
+if "%IS_ADMIN%"=="0" (
+    if defined XM_SKIP_ELEVATE (
+        call :log "AVISO: XM_SKIP_ELEVATE=1 e IS_ADMIN=0 - continuando em modo degradado (operacoes admin vao falhar)."
+        set "_DEGRADED=1"
+    ) else (
+        call :log "ERRO: nao foi possivel obter privilegios de administrador."
+        call :pause_helper
+        exit /b 1
+    )
+) else (
+    set "_DEGRADED=0"
+)
+call :log "TRACE: pos-elevation, IS_ADMIN=%IS_ADMIN%"
 
 :: ------- Lockfile -------
 if exist "%LOCKFILE%" (
