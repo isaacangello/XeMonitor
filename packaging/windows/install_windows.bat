@@ -57,9 +57,13 @@ call :log "=== XeMonitor installer v0.8.0 iniciado (silent=%SILENT%, pid=%INSTAL
 set "IS_ADMIN=1"
 fltmc >nul 2>&1 || set "IS_ADMIN=0"
 if "%IS_ADMIN%"=="0" (
-    call :log "Solicitando privilegios de administrador..."
-    powershell -Command "Start-Process cmd -ArgumentList '/c \"%~f0\" %*' -Verb RunAs"
-    set "_DIE_RC=0"
+    if defined XM_SKIP_ELEVATE (
+        call :log "AVISO: XM_SKIP_ELEVATE setado, nao elevando (modo teste)."
+    ) else (
+        call :log "Solicitando privilegios de administrador..."
+        powershell -Command "Start-Process cmd -ArgumentList '/c \"set XM_SKIP_ELEVATE=1^&^& \"%~f0\" %*\"' -Verb RunAs"
+        set "_DIE_RC=0"
+    )
 )
 if "%IS_ADMIN%"=="0" goto :die
 
