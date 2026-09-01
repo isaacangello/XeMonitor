@@ -64,10 +64,15 @@ Source: "..\..\diagnose_windows.bat"; DestDir: "{app}"; Flags: ignoreversion
 Source: "install_windows.bat"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
 Source: "start_bridge.cmd"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
 Source: "start_xemonitor.cmd"; DestDir: "{app}\packaging\windows"; Flags: ignoreversion
-; Golden image Alpine (pre-configurada e testada): openrc/kmod/eudev + udev
-; rule CH340 + wsl.conf + init script + bridge. Importada pelo instalador.
-; Permite instalacao offline (sem depender de download do Alpine).
-Source: "..\..\packaging\windows\golden\xemonitor-alpine-3.24.1-x86_64.tar.gz"; DestDir: "{app}\packaging\windows\golden"; Flags: ignoreversion
+; Miniroot Alpine (pre-fabricado e versionado pelo bridge). Cada
+;; compilacao do bridge gera um tarball em packaging/windows/miniroots/
+;; (alpine-bridge-<ver>.<build>-x86_64.tar.gz). O pre-step
+;; scripts\prepare_miniroot_for_iss.ps1 copia o mais recente para
+;; 'alpine-bridge-current.tar.gz' (Inno Setup 6 nao suporta wildcard
+;; em Source). O install_windows.bat seleciona o mais recente em
+;; %APP_DIR%\packaging\windows\miniroots\alpine-bridge-*.tar.gz,
+;; entao o nome fixo eh apenas para o Inno empacotar.
+Source: "..\..\packaging\windows\miniroots\alpine-bridge-current.tar.gz"; DestDir: "{app}\packaging\windows\miniroots"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\XeMonitor"; Filename: "{app}\{#MyAppExeName}"
