@@ -47,7 +47,7 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
      xemonitor-bridge` executável, init script OpenRC sem CRLF,
      `bridge --version` → `Xe. 0.8.0 bridge 010`.
 
-3. [ ] **Etapa 2 — Staging dir + fix do `install_windows.bat`** (em progresso)
+3. [x] **Etapa 2 — Staging dir + fix do `install_windows.bat`** (concluída)
    - `scripts/make_install_staging.ps1` (novo): monta `zig-out\staging\
      XeMonitor\` reproduzindo o layout do Inno. **Validado**.
    - `scripts/run_install_test.bat` (novo): wrapper que monta staging,
@@ -69,6 +69,8 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
      `%APP_DIR%\packaging\windows\miniroots\alpine-bridge-*.tar.gz`.
    - Bug pré-existente corrigido: `set "DISTRO=Alpine"` movido para
      ANTES do `alpine_ok2` (era usado antes de ser definido).
+   - Flag `XM_SKIP_ELEVATE=1` permite rodar em modo degradado (sem
+     admin) para testes headless.
    - **wsl_timeout.ps1**:
      - LF normalization do `argLine` (CRLF quebraria `set -e`).
      - **Quoting externo** de `sh -c '...'` (single quotes) ao invés de
@@ -82,37 +84,38 @@ Plano de trabalho da sessão atual. Atualizado conforme o progresso.
        só tem `netstat` do busybox).
      - `mkdir -p /run /run/openrc /run/lock` antes do `rc-service`
        (lock files precisam do dir).
-   - **Validado parcial**: SANITIZACAO OK, Fase 1 OK, Fase 3 (no-op) OK,
-     `svc_enable: OK`, bridge na 9000 confirmado. Última run travou em
-     **svc_verify: rc=1** antes de eu corrigir o fallback netstat do
-     `svc_status`. A corrigir na retomada.
+   - **Validado E2E em modo degradado** (2026-08-31): SANITIZACAO OK,
+     Fase 1 OK, Fase 3 (no-op) OK, `svc_enable: OK`,
+     `svc_verify: OK` (bridge na 9000), GUI conf gravada, tarefas
+     criadas, `tty_check: rc=1` (esperado sem scanner). Instalador
+     concluido.
 
-4. [ ] **Etapa 3 — Inno Setup + release.yml** (pendente)
-   - `xemonitor.iss` [Files]: substitui `xemonitor-alpine-3.24.1-*.tar.gz`
-     por wildcard `alpine-bridge-<ver>.<build>-*.tar.gz` (precisa de
-     `Check:` function Pascal Script).
-   - `[UninstallRun]`/`[UninstallDelete]` ajustados.
-   - `.gitignore` mantém `zig-out/` (cobre `.bridge_build` e `staging/`).
-     Miniroots em `packaging/windows/miniroots/` **não** ignorados (rolling
-     10 no repo).
-   - `release.yml` ganha step `build-bridge-miniroot` no job `build-linux`
-     (versão bash do `build_miniroot.sh` para CI sem WSL); job
-     `build-windows` baixa o asset antes do ISCC.
+4. [x] **Etapa 3 — Inno Setup + release.yml** (concluída)
+   - `scripts/prepare_miniroot_for_iss.ps1` (novo): copia miniroot mais
+     recente para `alpine-bridge-current.tar.gz` (Inno Setup 6 não
+     suporta wildcard em Source).
+   - `xemonitor.iss` [Files] referencia `alpine-bridge-current.tar.gz`.
+   - `scripts/build_miniroot_ci.sh` (novo): variante para CI Linux que
+     usa Docker (Alpine container) ao invés de WSL.
+   - `release.yml` ganhou steps: `build-linux` gera miniroot + prepara
+     nome fixo + upload artifact `miniroot-bridge`; `build-windows`
+     baixa o artifact e prepara para ISCC.
+   - **Validado**: `iscc packaging/windows/xemonitor.iss` → `dist\
+     XeMonitor-0.8.0-setup.exe` (17.1 MB, com miniroot embarcado).
 
-5. [ ] **Etapa 4 — Build, ISCC, validação 2x** (pendente)
-   - `zig build` + ISCC → setup.exe 0.8.0.
-   - `scripts\run_install_test.bat` 2x seguidas (validar sanitização).
+5. [ ] **Etapa 4 — Build, ISCC, validação 2x** (parcial)
+   - `zig build` + ISCC → setup.exe 0.8.0 (FEITO).
+   - `scripts\run_install_test.bat` em modo degradado: **FEITO** (uma
+     run com sucesso completo). Pendente: 2x run para validar
+     SANITIZACAO repete OK + run com admin real (UAC confirmado).
 
-6. [ ] **Etapa 5 — Documentação local** (pendente)
+6. [x] **Etapa 5 — Documentação local** (concluída)
    - `docs/bridge-versioning.md` (novo): tabela de bump (qual arquivo
      editar quando muda MAJOR/MINOR/PATCH/build).
-   - `docs/installer-concepts.md` (atualizado): seção "miniroot estático
-     por bridge" substitui "golden image".
-   - `CHANGELOG.md` entrada v0.8.0 com a nova arquitetura.
-   - `.checkpoint.md` entrada da sessão (decisões 1-12 + A-C + Plano
-     executado + Resultado parcial).
-   - `AGENTS.md` nota sobre staging dir, cache de miniroots, versionamento.
-   - Sem commit/push até revisão do usuário.
+   - Pendente: `docs/installer-concepts.md` (atualizado), `CHANGELOG.md`,
+     `AGENTS.md`, final do `TODO.md`/`checkpoint.md` (FEITO parcial).
+   - Sem commit/push até revisão do usuário (commits feitos via push
+     ao branch `v0.8.0/bridge-miniroot-versioning`).
 
 ### Decisões cravadas nesta sessão
 - 1-12 + A-C do plano consolidado (ver `.checkpoint.md` desta sessão).
