@@ -18,16 +18,25 @@ pushd "%ROOT%"
 
 echo [run_test] Root: %ROOT%
 
-:: 1) Montar staging
-echo [run_test] montando staging...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\make_install_staging.ps1" -Root "%ROOT%"
-if errorlevel 1 (
-    echo [run_test] ERRO: make_install_staging.ps1 falhou.
-    popd
-    exit /b 1
-)
-
+:: 1) Montar staging (se zig-out\staging\XeMonitor tem handle preso de
+;; run anterior, cai automaticamente em zig-out\staging\test\XeMonitor)
 set "STAGING=%ROOT%\zig-out\staging\XeMonitor"
+if exist "%STAGING%\packaging\windows\install_windows.bat" (
+    echo [run_test] staging existente em %STAGING% (reaproveitando)
+) else (
+    echo [run_test] montando staging em %STAGING%...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\make_install_staging.ps1" -Root "%ROOT%" -StagingDir "%STAGING%" 2>nul
+    if errorlevel 1 (
+        echo [run_test] staging original locked; usando staging alternativo
+        set "STAGING=%ROOT%\zig-out\staging\test\XeMonitor"
+        if exist "%STAGING%\packaging\windows\install_windows.bat" (
+            echo [run_test] staging alternativo existente (reaproveitando)
+        ) else (
+            echo [run_test] montando staging alternativo em %STAGING%...
+            powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\make_install_staging.ps1" -Root "%ROOT%" -StagingDir "%STAGING%"
+        )
+    )
+)
 if not exist "%STAGING%\packaging\windows\install_windows.bat" (
     echo [run_test] ERRO: staging nao foi criado em %STAGING%
     popd
@@ -46,18 +55,24 @@ echo [run_test] log:     %LOGFILE%
 ;; (em headless o UAC prompt nao aparece). O caller (opencode) deve
 ;; garantir que ja esta rodando elevado quando necessario.
 set "WRAPPER=%TEMP%\xm_run_install_test_%STAMP%.cmd"
-> "%WRAPPER%" echo @echo off
->>"%WRAPPER%" echo cd /d "%STAGING%"
->>"%WRAPPER%" echo set XM_SKIP_ELEVATE=1
->>"%WRAPPER%" echo call "%STAGING%\packaging\windows\install_windows.bat" /silent
->>"%WRAPPER%" echo echo EXIT=%%errorlevel%%
+echo @echo off>"%WRAPPER%"
+echo cd /d "%STAGING%">>"%WRAPPER%"
+echo set XM_SKIP_ELEVATE=1>>"%WRAPPER%"
+echo call "%STAGING%\packaging\windows\install_windows.bat" /silent>>"%WRAPPER%"
+echo echo EXIT=%%errorlevel%%>>"%WRAPPER%"
 
-:: 4) Subir o wrapper com RunAs (admin). Para execucao interativa, o
-:: UAC aparece. Em headless (CI), seria necessario outro mecanismo.
+:: 4) Subir o wrapper. Se XM_FORCE_RUNAS=1 (padrao), tenta RunAs; senao
+;; (ambiente ja admin OU modo degradado XM_SKIP_ELEVATE=1), roda direto.
+if defined XM_NO_RUNAS goto :run_direct
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$p = Start-Process -FilePath '%WRAPPER%' -Verb RunAs -PassThru -Wait; exit $p.ExitCode" ^
     > "%LOGFILE%" 2>&1
 set "RC=%errorlevel%"
+goto :run_done
+:run_direct
+cmd /c "%WRAPPER%" > "%LOGFILE%" 2>&1
+set "RC=%errorlevel%"
+:run_done
 
 :: Limpa wrapper
 del "%WRAPPER%" 2>nul
