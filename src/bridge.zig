@@ -41,10 +41,13 @@ const Mutex = struct {
 };
 
 const TCP_PORT: u16 = 9000;
-const BAUD: u32 = 115200;
+const BAUD_DEFAULT: u32 = 115200;
 const SERIAL_DEFAULT = "/dev/ttyUSB0";
-/// Device serial ativo. Pode ser sobrescrito por --device ou autoDetectSerial().
+const CONFIG_PATH = "/etc/xemonitor/bridge.conf";
+/// Device serial ativo. Pode ser sobrescrito por --device, arquivo de config ou autoDetectSerial().
 var serial_device: []const u8 = SERIAL_DEFAULT;
+/// Baud rate serial. Pode ser sobrescrito por --baud ou arquivo de config.
+var serial_baud: u32 = BAUD_DEFAULT;
 const CODE_MAX = 256;
 const TIOCM_DTR: c_int = 0x002;
 const TIOCM_RTS: c_int = 0x004;
@@ -223,6 +226,41 @@ const SharedState = struct {
     }
 };
 
+const ConfOverride = struct {
+    device: ?[]const u8 = null,
+    baud: ?u32 = null,
+    tcp_port: ?u16 = null,
+};
+
+/// Carrega as chaves do arquivo de config `/etc/xemonitor/bridge.conf` (se
+/// existir). Formato simples `chave=valor` por linha (opcional # comentario):
+///   device=/dev/ttyUSB0
+///   baud=115200
+///   tcp_port=9000
+/// Precedencia: CLI > arquivo de config > default. Chamado no inicio do main,
+/// antes do parse de args, que sobrescreve se os flags forem passados.
+fn loadConfig(io: anytype, gpa: std.mem.Allocator, out: *ConfOverride) void {
+    const raw = std.Io.Dir.cwd().readFileAlloc(io, CONFIG_PATH, gpa, std.Io.Limit.limited(8 * 1024)) catch return;
+    std.debug.print("[bridge] loaded config {s}\n", .{CONFIG_PATH});
+
+    var lines = std.mem.splitScalar(u8, raw, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const val = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (std.mem.eql(u8, key, "device")) {
+            out.device = gpa.dupe(u8, val) catch null;
+        } else if (std.mem.eql(u8, key, "baud")) {
+            out.baud = std.fmt.parseInt(u32, val, 10) catch null;
+        } else if (std.mem.eql(u8, key, "tcp_port")) {
+            out.tcp_port = std.fmt.parseInt(u16, val, 10) catch null;
+        }
+    }
+    gpa.free(raw);
+}
+
 fn usage() void {
     std.debug.print(
         \\XeMonitor Bridge
@@ -231,16 +269,21 @@ fn usage() void {
         \\  bridge                       raw TCP server (default port 9000)
         \\  bridge --tcp-port <n>        raw TCP server on a custom port
         \\  bridge --device <path>       serial device (default: autodetect)
+        \\  bridge --baud <rate>         serial baud rate (default: 115200)
         \\  bridge -s <url>              HTTP server (e.g. http://0.0.0.0:8080)
         \\  bridge --fake-scan <ms>      push a fake 'TEST<n>' code every <ms> ms (no hardware needed)
         \\  bridge --verbose              log every serial read (diagnostics)
         \\  bridge --print-device         print autodetected serial path and exit
         \\  bridge -h                    show this help
         \\
+        \\Config file: /etc/xemonitor/bridge.conf (optional; CLI overrides)
+        \\  keys: device=..., baud=..., tcp_port=...
+        \\
         \\Examples:
         \\  bridge
         \\  bridge --tcp-port 9001
         \\  bridge --device /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+        \\  bridge --baud 9600
         \\  bridge -s http://0.0.0.0:8080
         \\  bridge --fake-scan 2000
         \\  bridge --verbose
@@ -270,8 +313,8 @@ fn configureSerial(fd: c_int) void {
     t.c_cc[c.VMIN] = 1;
     t.c_cc[c.VTIME] = 0;
 
-    _ = c.cfsetispeed(&t, BAUD);
-    _ = c.cfsetospeed(&t, BAUD);
+    _ = c.cfsetispeed(&t, serial_baud);
+    _ = c.cfsetospeed(&t, serial_baud);
 
     _ = c.tcsetattr(fd, c.TCSAFLUSH, &t);
     _ = c.tcflush(fd, c.TCIOFLUSH);
@@ -314,7 +357,7 @@ fn openSerial() c_int {
         std.debug.print("[bridge] failed to open serial\n", .{});
         return -1;
     }
-    std.debug.print("[bridge] configuring serial {d} 8N1...\n", .{BAUD});
+    std.debug.print("[bridge] configuring serial {d} 8N1...\n", .{serial_baud});
     configureSerial(fd);
     return fd;
 }
@@ -565,6 +608,13 @@ pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     const io_inst = init.io;
 
+    // Carrega arquivo de config antes do parse da CLI (CLI tem precedencia).
+    var conf = ConfOverride{};
+    loadConfig(io_inst, gpa, &conf);
+    if (conf.baud) |b| serial_baud = b;
+    if (conf.tcp_port) |p| tcp_port = p;
+    if (conf.device) |d| serial_device = d;
+
     // --print-device: detecta e imprime o device, depois sai.
     // Usado pelo install.sh antes de instalar o bridge em /usr/local/bin.
     if (args.len >= 2 and std.mem.eql(u8, args[1], "--print-device")) {
@@ -648,6 +698,20 @@ pub fn main(init: std.process.Init) !u8 {
             }
             i += 1;
             serial_device = args[i];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--baud")) {
+            if (i + 1 >= args.len) {
+                std.debug.print("[bridge] --baud requires a baud rate\n", .{});
+                usage();
+                return 1;
+            }
+            i += 1;
+            serial_baud = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("[bridge] invalid baud '{s}'\n", .{args[i]});
+                usage();
+                return 1;
+            };
             continue;
         }
         if (std.mem.eql(u8, arg, "--verbose")) {

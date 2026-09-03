@@ -472,13 +472,20 @@ if not defined DETECTED_DEVICE if exist "%APP_DIR%\setup_usb.bat" (
 )
 
 if defined DETECTED_DEVICE (
-    :: Converter para path by-id persistente
-    set "ALPINE_DEVICE=/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
-    
-    :: Tentar resolver ID real no Alpine
+    :: Resolver o device REAL dentro do Alpine (by-id se existir, senao /dev/ttyUSB0)
+    :: Nota: no WSL o daemon udev nao roda, entao /dev/serial/by-id/ geralmente
+    :: nao existe — nesse caso o default correto e /dev/ttyUSB0 (criado pelo kernel).
+    set "ALPINE_DEVICE="
     for /f "tokens=*" %%I in ('wsl -d Alpine -u root -- sh -c "ls /dev/serial/by-id/ 2>/dev/null | grep -i 1a86 | head -1" 2^>nul') do (
         set "ALPINE_DEVICE=/dev/serial/by-id/%%I"
     )
+    if not defined ALPINE_DEVICE (
+        :: Sem symlink by-id (udev nao roda no WSL) -> fallback /dev/ttyUSB0
+        for /f "tokens=*" %%I in ('wsl -d Alpine -u root -- sh -c "ls /dev/ttyUSB* 2>/dev/null | head -1" 2^>nul') do (
+            set "ALPINE_DEVICE=%%I"
+        )
+    )
+    if not defined ALPINE_DEVICE set "ALPINE_DEVICE=/dev/ttyUSB0"
     
     :: Gravar no Alpine
     wsl -d Alpine -u root -- sh -c "mkdir -p /etc/xemonitor && echo DEVICE=%ALPINE_DEVICE% > /etc/xemonitor/device"

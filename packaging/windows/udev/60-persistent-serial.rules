@@ -1,0 +1,4 @@
+# Persistent serial device symlinks for CH340
+ACTION=="add", SUBSYSTEM=="tty", SUBSYSTEMS=="usb", \
+  ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
+  SYMLINK+="serial/by-id/usb-1a86_USB_Serial-if00-port0"
