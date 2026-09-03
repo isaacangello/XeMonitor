@@ -11,6 +11,17 @@ dist/
 # Config gerada pelos scripts de run (paths por máquina)
 xemonitor-gui.conf
 
+# Miniroot / golden images (geradas por build_miniroot.sh; so .gitkeep versionado)
+packaging/windows/miniroots/*.tar.gz
+packaging/windows/golden/
+
+# Binarios de diagnostico compilados (fontes .zig em tools/ sao versionadas)
+dtrtest
+tools/hw
+tools/hw2
+tools/hw.zig
+tools/hw2.zig
+
 # Runtime logs
 *.log
 stderr.txt

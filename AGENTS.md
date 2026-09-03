@@ -44,6 +44,8 @@ assets/xemonitor.desktop → desktop entry (ícone da janela/menu; Wayland usa I
 diagnose_xemonitor.sh → diagnóstico/auto-recuperação do host Linux (--check, --fix, --test-serial)
 build.zig             → build script (exe + bridge + gui + testes)
 build.zig.zon         → dependências (Zig 0.16.0, serial + dvui)
+VERSION               → FONTE ÚNICA da versão (uma linha, ex. 0.8.1). Bumpar = editar este + assets/xemonitor.rc.
+docs/KNOWN_ISSUES.md  → problemas já diagnosticados/resolvidos (LEIA antes de "corrigir" um sintoma)
 README.md             → README em inglês (padrão do GitHub; link p/ português)
 README.pt-BR.md       → README em português (link p/ inglês)
 docs/windows-installer.md → instruções do instalador Windows (wizard next-next-finish)
@@ -62,7 +64,8 @@ scripts/uninstall_autostart.bat   → remove as tarefas agendadas
 systemd/xemonitor-bridge.service  → unit systemd do bridge (sistema)
 systemd/xemonitor-gui.service     → unit systemd de usuário opcional do GUI (autostart é o padrão)
 openrc/xemonitor-bridge            → init script OpenRC do bridge (padrão no Alpine WSL)
-packaging/windows/                → instalador Windows: xemonitor.iss (Inno Setup) + install_windows.bat + start_bridge.cmd + start_xemonitor.cmd
+packaging/windows/                → instalador Windows: xemonitor.iss (Inno Setup) + install_windows.bat + build_installer.bat + start_bridge.cmd + start_xemonitor.cmd
+packaging/windows/udev/           → regra udev CH340 (60-persistent-serial.rules; arquivo separado, copiado via DrvFS)
 install.sh                        → instalador Linux (curl | bash): release + udev + grupos + serviço
 uninstall.sh                      → fonte do desinstalador Linux (--purge remove config+logs);
                                     empacotado no release como /usr/local/bin/xemonitor-uninstall
@@ -80,6 +83,21 @@ CHANGELOG.md          → changelog
   `xemonitor-gui.pid`, `xemonitor_tray.pid`, `xemonitor-gui.conf`.
 - Implementação única em `src/paths.zig` (`openConfigDir`, `joinPath`, `datedLogName`).
   Não reintroduzir arquivos soltos no cwd do usuário.
+
+## Versionamento (fonte única: arquivo VERSION)
+- **`VERSION` (raiz) é a fonte única** da versão (uma linha, ex. `0.8.1`).
+  Todos os binários (bridge/exe/gui) e o instalador derivam a versão dele.
+  Bumpar = editar **`VERSION` + `assets/xemonitor.rc`** (metadados do PE).
+- `build.zig` (`resolveVersion`) lê o `VERSION` e injeta via `addOptions`
+  (`build_options.version`) em **bridge, exe e gui**. NUNCA bumpar versão
+  editando binários/iss/bat/CI — são derivados.
+- `xemonitor --version` / título da janela do GUI mostram a versão.
+- Instalador: `xemonitor.iss` recebe a versão via `ISCC /DMyAppVersion=<ver>`
+  (o ISPP **não** expande `#include` de texto puro — NÃO use `#include` p/
+  isso). Helper local: `packaging\windows\build_installer.bat` lê `VERSION`
+  e chama o ISCC. CI: `release.yml` usa `$(cat VERSION)` / `Get-Content VERSION`.
+- `build.zig.zon` `.version`/`.bridge_version` devem estar em **sincronia**
+  com `VERSION` (CI check opcional valida). Ver `docs/bridge-versioning.md`.
 
 ## Roadmap (visão geral)
 1. ✅ **xemonitor como teclado nos dois SO** — Windows: `SendInput` (validado com **scan físico real** no v0.5.0 — ver fix DTR/RTS abaixo); Linux: uinput/ydotool (validado no CachyOS).
@@ -151,4 +169,9 @@ wsl -d Alpine -u root systemctl status docker
 - Ícone de bandeja é **opt-in** (`--tray`); padrão desligado. O ícone usa PowerShell oculto — se o processo for morto com `taskkill /f`, vira órfão (limpar cache `TrayNotify` + reiniciar explorer).
 - O modo TCP do bridge deve aceitar múltiplas conexões (xemonitor reconecta a cada 2s).
 - Validar injeção sem elevado: tarefa agendada com `/rl LIMITED` + wrapper `.cmd` que redireciona stdout/stderr para arquivo; ler o log com a ferramenta read (a saída do terminal corrompe bytes).
+- **LEIA `docs/KNOWN_ISSUES.md` antes de "corrigir" um sintoma** — muitos "fixes"
+  (DTR/RTS, delay 200ms, by-id vs ttyUSB0, cbSize 40, #include ISPP, parênteses
+  em .bat, etc.) são requisitos, não bugs.
+- **.bat do repo = ASCII puro + CRLF**: nunca parênteses em strings dentro de
+  `if (...)` nem em-dash/UTF-8 multibyte (corrompem o parse do cmd).
 - Ver `TODO.md` (plano atual) e `.checkpoint.md` (contexto histórico/pendências).
