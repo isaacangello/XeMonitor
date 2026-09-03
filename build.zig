@@ -1,9 +1,16 @@
 const std = @import("std");
 
-/// Versao semver do binario `bridge`. Independente da versao do app
-/// (build.zig.zon .version). Bumpar manualmente aqui quando o codigo do
-/// bridge mudar de forma observavel pelo usuario.
-const BRIDGE_VERSION: []const u8 = "0.8.0";
+/// Fonte unica da versao: le o arquivo `VERSION` na raiz do repo (uma linha).
+/// Todos os binarios (bridge/exe/gui) e o CI obtem a versao daqui. Para
+/// bumpar a versao, edite SOMENTE o arquivo VERSION (+ assets/xemonitor.rc p/
+/// metadados do PE no Windows).
+fn resolveVersion(b: *std.Build) []const u8 {
+    const content = std.Io.Dir.cwd().readFileAlloc(b.graph.io, "VERSION", b.allocator, .limited(32)) catch {
+        std.log.warn("VERSION file not found; using 0.0.0", .{});
+        return "0.0.0";
+    };
+    return b.allocator.dupe(u8, std.mem.trim(u8, content, " \t\r\n")) catch "0.0.0";
+}
 
 /// Resolve o `bridge_build` (contador de compilacao, 3+ digitos) com a
 /// seguinte ordem de fallback:
@@ -144,6 +151,9 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+
+    // Fonte unica de versao (arquivo VERSION na raiz).
+    const app_version = resolveVersion(b);
     // It's also possible to define more custom flags to toggle optional features
     // of this build script using `b.option()`. All defined flags (including
     // target and optimize options) will be listed when running `zig build --help`
@@ -185,6 +195,8 @@ pub fn build(b: *std.Build) void {
     //
     // If neither case applies to you, feel free to delete the declaration you
     // don't need and to put everything under a single module.
+    const exe_options = b.addOptions();
+    exe_options.addOption([]const u8, "version", app_version);
     const exe = b.addExecutable(.{
         .name = "xemonitor",
         .root_module = b.createModule(.{
@@ -208,6 +220,7 @@ pub fn build(b: *std.Build) void {
                 // importing modules from different packages).
                 .{ .name = "xemonitor", .module = mod },
                 .{ .name = "serial", .module = serial_dep.module("serial") },
+                .{ .name = "build_options", .module = exe_options.createModule() },
             },
         }),
     });
@@ -230,7 +243,7 @@ pub fn build(b: *std.Build) void {
     // ---- Bridge executable (Linux/WSL2) ----
     const bridge_build = resolveBridgeBuild(b);
     const bridge_options = b.addOptions();
-    bridge_options.addOption([]const u8, "version", BRIDGE_VERSION);
+    bridge_options.addOption([]const u8, "version", app_version);
     bridge_options.addOption([]const u8, "build", bridge_build);
     bridge_options.addOption([]const u8, "arch", "x86_64-linux-musl");
     const bridge = b.addExecutable(.{
@@ -262,7 +275,7 @@ pub fn build(b: *std.Build) void {
             "bash",
             "scripts/build_miniroot.sh",
             "--bridge-version",
-            BRIDGE_VERSION,
+            app_version,
             "--bridge-build",
             bridge_build,
         });
@@ -312,6 +325,8 @@ pub fn build(b: *std.Build) void {
         // native file dialogs (comdlg32 on Windows, zenity/etc. on Linux)
         .@"tiny-file-dialogs" = true,
     });
+    const gui_options = b.addOptions();
+    gui_options.addOption([]const u8, "version", app_version);
     const gui = b.addExecutable(.{
         .name = "xemonitor-gui",
         .root_module = b.createModule(.{
@@ -319,6 +334,9 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            .imports = &.{
+                .{ .name = "build_options", .module = gui_options.createModule() },
+            },
         }),
     });
     gui.root_module.addAnonymousImport("barcode_png", .{ .root_source_file = b.path("src/Barcode Scanner.png") });

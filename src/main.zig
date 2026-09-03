@@ -2,6 +2,8 @@ const std = @import("std");
 const zig_serial = @import("serial");
 const builtin = @import("builtin");
 const paths = @import("paths.zig");
+const build_options = @import("build_options");
+const app_version: []const u8 = build_options.version;
 const c = if (builtin.os.tag == .windows)
     @cImport({
         @cInclude("libserialport.h");
@@ -441,6 +443,7 @@ fn printUsage() void {
         \\  xemonitor --stdin           (read from stdin)
         \\  xemonitor --tray            (enable system tray icon; off by default)
         \\  xemonitor --kill            (terminate a running instance)
+        \\  xemonitor --version         (print version and exit)
         \\  xemonitor --inject <uinput|ydotool|xdotool>  (Linux keyboard injector; default uinput)
         \\
         \\Examples:
@@ -462,6 +465,11 @@ fn parseCliOptions(allocator: std.mem.Allocator, args: []const [:0]const u8) !Cl
 
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             printUsage();
+            return error.HelpRequested;
+        }
+
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            logPrint("xemonitor {s}\n", .{app_version});
             return error.HelpRequested;
         }
 

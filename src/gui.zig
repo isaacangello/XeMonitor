@@ -5,10 +5,12 @@ const SDLBackend = @import("sdl3-backend");
 const tray_mod = @import("tray.zig");
 const paths = @import("paths.zig");
 const i18n = @import("i18n.zig");
+const build_options = @import("build_options");
 
 const os = builtin.os.tag;
 
 const APP_NAME = "XeMonitor";
+const APP_TITLE = "XeMonitor " ++ build_options.version;
 const CONFIG_FILE = paths.GUI_CONFIG_FILE;
 /// Nome-base legado; o log atual é datado (xemonitor-YYYY-MM-DD.log).
 const DEFAULT_LOG = "xemonitor.log";
@@ -1546,7 +1548,7 @@ pub fn main(init: std.process.Init) !u8 {
         .size = .{ .w = 880.0, .h = 660.0 },
         .min_size = .{ .w = 420.0, .h = 360.0 },
         .vsync = true,
-        .title = "XeMonitor",
+        .title = APP_TITLE,
     });
     defer backend.deinit();
     setWindowIcon(&backend);
