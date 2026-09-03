@@ -51,7 +51,7 @@ jobs:
       - name: Build miniroot Alpine (pre-baked with this bridge)
         run: |
           bash scripts/build_miniroot_ci.sh \
-            --bridge-version "0.8.0" \
+            --bridge-version "$(cat VERSION)" \
             --bridge-build  "${{ github.ref_name }}" \
             --bridge        "zig-out/bin/bridge" \
             --init          "openrc/xemonitor-bridge" \
@@ -173,7 +173,9 @@ jobs:
             Write-Error "ISCC.exe not found"
             exit 1
           }
-          & $issc packaging\windows\xemonitor.iss
+          # Versao do instalador: vem do arquivo VERSION (fonte unica de versao).
+          $ver = (Get-Content VERSION | Select-Object -First 1).Trim()
+          & $issc "/DMyAppVersion=$ver" packaging\windows\xemonitor.iss
         shell: pwsh
 
       - name: Upload Windows artifacts

@@ -9,10 +9,17 @@
 ;     WSL2/usbipd/Alpine + tarefas + inicio automatico.
 ;
 ; Compilacao (na raiz do repo):
-;   iscc packaging\windows\xemonitor.iss
+;   iscc.exe /DMyAppVersion=<versao> packaging\windows\xemonitor.iss
+; A <versao> deve vir do arquivo VERSION na raiz (fonte unica). O CI
+; (release.yml) e o fluxo manual fazem:  /DMyAppVersion=$(cat VERSION).
+; Sem -D, cai no default "0.0.0" (envio acidental exige -D).
 ; ============================================================
 #define MyAppName "XeMonitor"
-#define MyAppVersion "0.8.0"
+; Versao: vem de -DMyAppVersion=<versao> (CI/install_windows.bat leem o arquivo
+; VERSION da raiz e passam via ISCC). Default abaixo so p/ uso manual sem -D.
+#ifndef MyAppVersion
+#define MyAppVersion "0.0.0"
+#endif
 #define MyAppPublisher "XeMonitor"
 #define MyAppExeName "xemonitor-gui.exe"
 
@@ -87,7 +94,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Rodado ELEVADO (herda o admin do setup) e VISIVEL para o usuario ver o
 ; progresso [1/7]..[7c]. /silent suprime os pauses do .bat. Instalacao ja
 ; existente + /silent = auto-reparo (ve o proprio install_windows.bat).
-Filename: "{app}\packaging\windows\install_windows.bat"; WorkingDir: "{app}"; Parameters: "/silent"; StatusMsg: "Configurando WSL, bridge, USB e tarefas..."
+Filename: "{app}\packaging\windows\install_windows.bat"; WorkingDir: "{app}"; Parameters: "/silent ""{#MyAppVersion}"""; StatusMsg: "Configurando WSL, bridge, USB e tarefas..."
 ; Passo 2: lanca o GUI principal (janela + bandeja). NUNCA roda o exe direto
 ; daqui: [Run] herda a elevacao do setup e um xemonitor elevado congela (UIPI
 ; bloqueia o SendInput). A tarefa XeMonitor-App foi criada pelo passo 1 com

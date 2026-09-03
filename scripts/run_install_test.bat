@@ -53,11 +53,13 @@ echo [run_test] log:     %LOGFILE%
 :: XM_SKIP_ELEVATE=1 faz o install_windows.bat NAO tentar auto-elevar
 ;; (em headless o UAC prompt nao aparece). O caller (opencode) deve
 ;; garantir que ja esta rodando elevado quando necessario.
+:: Versao enquistada no wrapper: le da raiz do repo (VERSION) e repassa ao bat.
+for /f "usebackq delims=" %%v in ("%ROOT%\VERSION") do set "VER=%%v"
 set "WRAPPER=%TEMP%\xm_run_install_test_%STAMP%.cmd"
 echo @echo off>"%WRAPPER%"
 echo cd /d "%STAGING%">>"%WRAPPER%"
 echo set XM_SKIP_ELEVATE=1>>"%WRAPPER%"
-echo call "%STAGING%\packaging\windows\install_windows.bat" /silent>>"%WRAPPER%"
+echo call "%STAGING%\packaging\windows\install_windows.bat" /silent "%VER%">>"%WRAPPER%"
 echo echo EXIT=%%errorlevel%%>>"%WRAPPER%"
 
 :: 4) Subir o wrapper. XM_NO_RUNAS=1 roda direto sem RunAs.

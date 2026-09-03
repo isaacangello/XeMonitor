@@ -1,6 +1,6 @@
 @echo off
 :: ============================================================
-:: install_windows.bat v0.8.0 - Instalador Windows do XeMonitor.
+:: install_windows.bat - Instalador Windows do XeMonitor (versao via VERSION/ISCC).
 :: Fluxo: sanitizacao pre-instalacao -> golden image -> bridge -> final.
 ::
 ::  SANIT    Pre-flight: remove estado residual de instalacao anterior
@@ -17,11 +17,15 @@
 ::   /silent  — Inno Setup ([Run]): nao faz pause. Instalacao existente = auto-reparo.
 :: ============================================================
 setlocal enabledelayedexpansion
-title XeMonitor - Instalar v0.8.0 (Windows)
+title XeMonitor - Instalador Windows
 set "_FATAL=0"
 
 :: ------- Config -------
 set "SILENT=%~1"
+:: Versao: passada pelo Inno Setup [Run] (vinda do arquivo VERSION via ISCC -D).
+:: Fallback "dev" (uso manual fora do instalador).
+set "APP_VERSION=%~2"
+if "%APP_VERSION%"=="" set "APP_VERSION=dev"
 :: %APP_DIR% = raiz da instalacao = %CD%. Em producao, o Inno Setup roda
 :: este script com WorkingDir={app}. Em testes (staging), scripts\run_install_test.bat
 :: faz cd para o staging root antes de chamar. SEMPRE invocacao explicita;
@@ -42,14 +46,14 @@ set "LOG_DIR=%APPDATA%\xemonitor\logs"
 set "LOGFILE=%LOG_DIR%\install.log"
 set "TEMP_LOG=%TEMP%\xemonitor-install-%RANDOM%.log"
 set "LOCKFILE=%TEMP%\xemonitor-install.lock"
-call :log "=== XeMonitor installer v0.8.0 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
+call :log "=== XeMonitor installer %APP_VERSION% iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- PID do processo -------
 set "INSTALL_PID="
 for /f "delims=" %%p in ('powershell -NoProfile -Command "[System.Diagnostics.Process]::GetCurrentProcess().Id"') do set "INSTALL_PID=%%p"
 
 :: ------- Log helper -------
-call :log "=== XeMonitor installer v0.8.0 iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
+call :log "=== XeMonitor installer %APP_VERSION% iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- Auto-elevacao para Admin -------
 :: NOTA: `net session` pode falhar mesmo para admins (servico SMB/LanmanServer parado).
@@ -98,7 +102,7 @@ if exist "%LOCKFILE%" (
 echo %INSTALL_PID%>"%LOCKFILE%"
 
 echo ==========================================
-echo  XeMonitor v0.8.0 - Instalador Windows
+echo  XeMonitor %APP_VERSION% - Instalador Windows
 echo ==========================================
 echo.
 call :log "TRACE: Admin OK. IS_ADMIN=%IS_ADMIN%, SILENT=%SILENT%"
@@ -665,7 +669,7 @@ if !WSL_RC! equ 0 (
 
 :: [6] Resumo
 echo ==========================================
-echo  Instalacao v0.8.0 concluida!
+echo  Instalacao %APP_VERSION% concluida!
 echo.
 echo   Instalado em:   %INSTALL_DIR%
 echo   Distro WSL:     %DISTRO% (Alpine/OpenRC)
