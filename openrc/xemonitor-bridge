@@ -37,23 +37,32 @@ start_pre() {
     fi
 
     # 2. Auto-detectar CH340 (múltiplas estratégias)
-    local dev=""
+    dev=""
 
     # 2a. by-id persistente (udev) - preferido
     for d in /dev/serial/by-id/usb-1a86*; do
-        [ -e "$d" ] && { dev="$d"; break; }
+        if [ -e "$d" ]; then
+            dev="$d"
+            break
+        fi
     done
 
     # 2b. Scan via udevadm (vendor 1a86 = CH340)
     if [ -z "$dev" ]; then
         for tty in /dev/ttyUSB*; do
-            [ -e "$tty" ] || continue
-            udevadm info -a -n "$tty" 2>/dev/null | grep -q "1a86" && { dev="$tty"; break; }
+            if [ -e "$tty" ]; then
+                if udevadm info -a -n "$tty" 2>/dev/null | grep -q "1a86"; then
+                    dev="$tty"
+                    break
+                fi
+            fi
         done
-    done
+    fi
 
     # 2c. Fallback padrão
-    [ -z "$dev" ] && [ -e /dev/ttyUSB0 ] && dev="/dev/ttyUSB0"
+    if [ -z "$dev" ] && [ -e /dev/ttyUSB0 ]; then
+        dev="/dev/ttyUSB0"
+    fi
 
     # 3. Usar device detectado
     if [ -n "$dev" ] && [ -e "$dev" ]; then
