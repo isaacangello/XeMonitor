@@ -235,3 +235,18 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
 - **NÃO** `pkill -f` em scripts Linux (casa com o shell); usar `-x`.
 - **NÃO** usar `nohup ... > arquivo 2>&1 &` para background do bridge via
   vhci_hcd — causa dados garviodos. Usar `setsid` ou foreground.
+
+## 12. OpenRC init — sintaxe compacta POSIX quebra em BusyBox ash (CORRIGIDO)
+- **Sintoma**: `rc-service xemonitor-bridge start` falha com
+  `line 53: syntax error: unexpected "done" (expecting "fi")` no Alpine
+  WSL durante o build do miniroot.
+- **Causa**: BusyBox ash (shell do OpenRC) não aceita a sintaxe compacta
+  `[ -e "$d" ] && { dev="$d"; break; }` nem `[ -e "$tty" ] || continue`
+  dentro de `for ... do ... done` em todos os contextos. `local` também
+  não é suportado no escopo do OpenRC run.
+- **Fix (v0.8.2)**: `openrc/xemonitor-bridge` reescrito com
+  `if/then/fi` explícito e sem `local` (commit `00a537b`). Validado:
+  `rc-service status: started` no miniroot rebuild.
+- **Anti-regra**: em scripts OpenRC, **preferir `if/then/fi` explícito**
+  em vez de atalhos `&&`/`||` com agrupamento `{ ... }` ou `continue`.
+  OpenRC usa BusyBox ash, não bash.
