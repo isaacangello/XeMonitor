@@ -12,6 +12,8 @@
   (`TIOCM_DTR | TIOCM_RTS`) após o `tcsetattr` em `src/bridge.zig`
   (`configureSerial`). Sem isso, a leitura crua em `/dev/ttyUSB0` fica em
   **zero bytes** (sintoma visto em 2026-08-15). Não remover essa chamada.
+  Nota: via vhci_hcd (USB/IP), `TIOCMGET` pode retornar `status=0x20`
+  (apenas CTS) mesmo com DTR/RTS funcionais — é cosmético (ver KNOWN_ISSUES #5b).
 - Driver CH340 no Windows **quebrado** (erro 31 / AccessDenied) → o fluxo ativo usa **TCP bridge via WSL2**:
   - **WSL2** lê `/dev/ttyUSB0` e serve via TCP na porta **9000** (`zig-out/bin/bridge`) — hoje **Alpine/OpenRC/musl** (padrão; Arch/systemd mantido como fallback legacy)
   - **Windows** conecta com `xemonitor.exe --tcp 127.0.0.1:9000` e injeta via `SendInput` (Win32, nativo, sem PowerShell/clipboard)
@@ -174,4 +176,7 @@ wsl -d Alpine -u root systemctl status docker
   em .bat, etc.) são requisitos, não bugs.
 - **.bat do repo = ASCII puro + CRLF**: nunca parênteses em strings dentro de
   `if (...)` nem em-dash/UTF-8 multibyte (corrompem o parse do cmd).
+- **NÃO usar `nohup` para background do bridge via vhci_hcd** — causa dados
+  garviodos ou zero bytes. Usar `setsid` ou foreground. OpenRC
+  `command_background="yes"` usa daemonização nativa (não afetado).
 - Ver `TODO.md` (plano atual) e `.checkpoint.md` (contexto histórico/pendências).

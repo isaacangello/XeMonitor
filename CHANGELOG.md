@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.8.2] — 2026-09-04
+
+### Fixed
+
+- **Bridge via `nohup` corrompe dados (vhci_hcd)** — rodar o bridge com
+  `nohup ... > arquivo 2>&1 &` causava bytes garviodos ou zero bytes na
+  leitura serial. Causa raiz: redirecionamento de stdout em processo via
+  vhci_hcd interfere no tunnel USB/IP. Fix: usar `setsid` ou foreground.
+  OpenRC `command_background="yes"` não é afetado (daemonização nativa).
+- **DTR/RTS status 0x20 é cosmético** — `TIOCMGET` retorna `0x20` (só CTS)
+  via vhci_hcd mesmo com DTR/RTS funcionais. Scanner Honeywell 1900
+  transmite normalmente. Fix de `TIOCMBIS` + `sleep(200ms)` continua
+  obrigatório (não remover).
+- **Teste C com CSTOPB corrompe estado vhci_hcd** — programa C que seta
+  `CSTOPB` (2 stop bits) na serial via vhci_hcd corrompe o estado do
+  CH340. Só resolve com `rmmod vhci_hcd && modprobe vhci_hcd` ou replug
+  físico. Documentado em KNOWN_ISSUES #5c.
+
+### Changed
+
+- Bridge build 031 (v0.8.2) — compilado e validado em Alpine WSL2.
+- Pipeline E2E validado: CH340 → vhci_hcd → bridge → TCP 9000 →
+  xemonitor.exe → SendInput. Scans reais (`7898773920105`, `7898567704461`)
+  injetados corretamente.
+
+### Documentation
+
+- KNOWN_ISSUES.md: issue #5 resolvida (nohup), #5b (DTR/RTS cosmético),
+  #5c (CSTOPB corruption); anti-regra nohup adicionada.
+- AGENTS.md: nota vhci_hcd cosmético + anti-regra nohup.
+- .checkpoint.md: sessão 2026-09-03/04 documentada.
+
 ## [Unreleased]
 
 ### Fixed (install.sh 1.4.2)

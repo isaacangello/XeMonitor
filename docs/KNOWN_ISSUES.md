@@ -44,13 +44,43 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
   O driver CH340 do Windows continua corrompido.
 - Se um dia voltar ao acesso direto, é preciso reinstalar/diagnosticar o driver.
 
-## 5. Serial — "lê 1 byte lixo por scan" (PENDENTE de teste de baud)
+## 5. Serial — "1 byte lixo por scan" → Causa: nohup + vhci_hcd (RESOLVIDO)
 - **Sintoma**: o bridge recebe **1 byte lixo por scan** (hex `ED/EC/E2/CD/89`)
-  com device `/dev/ttyUSB0`.
-- **Status**: baud 115200 confirmado pelo usuário na controladora do scanner;
-  DTR/RTS ativos (dtrtest → `TIOCMGET=0x26`). Teste de baud 9600 vs 115200
-  **adiado** (decisão do usuário: após o plano de versionamento). Ver
-  `tools/dtrtest.zig`.
+  ou **zero bytes** com device `/dev/ttyUSB0`, mesmo DTR/RTS ativos.
+- **Causa raiz**: `nohup` com redirecionamento de stdout/stderr para arquivo
+  (`nohup bridge > /tmp/log 2>&1 &`) causa corrupção de dados via vhci_hcd.
+  O bridge em **foreground** ou via **`setsid`** funciona perfeitamente
+  (leitura limpa `7898567704461\r\n`).
+- **Fix**: usar `setsid` em vez de `nohup` para background:
+  `setsid /usr/local/bin/xemonitor-bridge --tcp-port 9000 < /dev/null > /dev/null 2>&1 &`
+  - OpenRC `command_background="yes"` usa daemonização nativa (diferente de
+    nohup) — **não afetado**.
+  - `bridge_ctl.bat` usa `rc-service start` — **não afetado**.
+- **Diagnóstico**: `stty -a` via vhci_hcd mostra "Not a tty" e baud 9600
+  (default kernel), mas o bridge v0.8.0 com strace em foreground leu dados
+  limpos. O `nohup` provoca alguma interação ruim com o vhci_hcd tunnel.
+- **Refs**: sessão 2026-09-03, teste com strace vs nohup vs setsid.
+
+## 5b. Serial — DTR/RTS status 0x20 é cosmético (vhci_hcd)
+- **Sintoma**: `TIOCMGET` retorna `status=0x20` (apenas CTS), sem DTR nem RTS,
+  mesmo após `TIOCMBIS` com `TIOCM_DTR | TIOCM_RTS`.
+- **Causa raiz**: o vhci_hcd (USB/IP tunnel) não reflete DTR/RTS no
+  `TIOCMGET`. O scanner Honeywell 1900 **transmite normalmente** — o fix
+  de `TIOCMBIS` + `sleep(200ms)` continua obrigatório.
+- **Fix**: nenhum (cosmético). Não remover `ioctl(TIOCMBIS)` do bridge.
+- **Refs**: sessão 2026-09-03, teste com `dtr_test` C (DTR=1 RTS=1 CTS=1)
+  vs bridge (status=0x20) — ambos funcionam.
+
+## 5c. Serial — teste C com CSTOPB corrompe estado do vhci_hcd
+- **Sintoma**: programa C que configura `CSTOPB` (2 stop bits) na serial via
+  vhci_hcd corrompe o estado — bridge passa a ler bytes garviodos mesmo após
+  `usbipd detach/reattach`.
+- **Causa raiz**: o vhci_hcd parece reter configuração termios entre sessões
+  de detach/reattach. Somente **reload do módulo vhci_hcd** (`rmmod/modprobe`)
+  ou **replug físico** do CH340 resolve.
+- **Fix**: não usar `CSTOPB` em testes C. Se corromper: `rmmod vhci_hcd && modprobe vhci_hcd`
+  ou reconectar fisicamente o CH340.
+- **Refs**: sessão 2026-09-03, teste `dtr_test.c` com `CSTOPB`.
 
 ## 6. Windows — SendInput `INPUT` = 40 bytes no x64
 - **Sintoma**: `SendInput` retorna 0.
@@ -203,3 +233,5 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
 - **NÃO** recompilar com xemonitor rodando (AccessDenied).
 - **NÃO** spawn síncrono de wsl.exe/processos longos no main loop do GUI.
 - **NÃO** `pkill -f` em scripts Linux (casa com o shell); usar `-x`.
+- **NÃO** usar `nohup ... > arquivo 2>&1 &` para background do bridge via
+  vhci_hcd — causa dados garviodos. Usar `setsid` ou foreground.
