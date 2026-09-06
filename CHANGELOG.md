@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.8.7] — 2026-09-06
+
+### Fixed
+
+- **CI: script miniroot com erro de sintaxe fantasma no `bash -n`** —
+  expressão `${SIZE_MB}` com `()` causava erro de sintaxe no `bash -n`
+  (parse mal atribuía a linha). O script funcionava localmente. Fix:
+  simplificar expressão do `bc`.
+
 ## [0.8.6] — 2026-09-06
 
 ### Fixed
