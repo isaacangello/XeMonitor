@@ -90,21 +90,16 @@ rc-service xemonitor-bridge start
 # Sem device serial no CI, o bridge inicia mas nao conecta — isso e' normal.
 # Nao checamos porta (ss/netstat nao disponiveis em todos os ambientes).
 echo "OK: bridge servico iniciado (sem device = esperado no CI)"
-'
 
-# Garantir estrutura de config no miniroot
+# Garantir estrutura de config e udev no miniroot (tudo em um exec
+# para que mkdir persista e o heredoc do cat funcione no mesmo shell).
 docker exec "$CONTAINER" sh -c '
-    mkdir -p /etc/xemonitor /etc/conf.d
+    mkdir -p /etc/xemonitor /etc/conf.d /etc/udev/rules.d
     touch /etc/xemonitor/device
     touch /etc/conf.d/xemonitor-bridge
-    # Regra udev para criar symlink /dev/serial/by-id/... persistente
     if [ ! -f /etc/udev/rules.d/60-persistent-serial.rules ]; then
-        cat > /etc/udev/rules.d/60-persistent-serial.rules <<'"'"'EOF
-# Persistent serial device symlinks for CH340
-ACTION=="add", SUBSYSTEM=="tty", SUBSYSTEMS=="usb", \
-  ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", \
-  SYMLINK+="serial/by-id/usb-1a86_USB_Serial-if00-port0"
-EOF
+        printf '\''%s\n'\'' "SUBSYSTEM==\"tty\", ATTRS{idVendor}==\"1a86\", ATTRS{idProduct}==\"7523\", MODE==\"0666\"" > /etc/udev/rules.d/99-ch340.rules
+        printf "%s\n" "ACTION==\"add\", SUBSYSTEM==\"tty\", SUBSYSTEMS==\"usb\", ATTRS{idVendor}==\"1a86\", ATTRS{idProduct}==\"7523\", SYMLINK+=\"serial/by-id/usb-1a86_USB_Serial-if00-port0\"" > /etc/udev/rules.d/60-persistent-serial.rules
     fi
 '
 
@@ -116,7 +111,7 @@ docker export "$CONTAINER" | gzip > "$TARBALL_PATH"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
 SIZE=$(stat -c '%s' "$TARBALL_PATH" 2>/dev/null || stat -f '%z' "$TARBALL_PATH" 2>/dev/null || echo "0")
-SIZE_MB=$(printf "%.1f" "$(echo "$SIZE / 1048576" | bc -l 2>/dev/null || echo "0")")
+SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc 2>/dev/null || echo "?")
 echo "[miniroot-ci] OK: $TARBALL_NAME gerado (${SIZE_MB} MB)"
 
 # Rolling 10

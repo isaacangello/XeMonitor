@@ -4,10 +4,13 @@
 
 ### Fixed
 
-- **CI: script miniroot com erro de sintaxe fantasma no `bash -n`** —
-  expressão `${SIZE_MB}` com `()` causava erro de sintaxe no `bash -n`
-  (parse mal atribuía a linha). O script funcionava localmente. Fix:
-  simplificar expressão do `bc`.
+- **CI: miniroot build falhava com "comando não encontrado"** — três bugs
+  encontrados via teste local com Docker real: (1) linha 93 tinha `'` solto
+  que fechava a string `sh -c '` da linha 73 prematuramente; (2) `mkdir`
+  estava em `docker exec` separado do `cat >` do heredoc, e `/etc/udev`
+  não existia no segundo shell; (3) `printf "%.1f"` com saída de `bc -l`
+  (muitos decimais) falhava. Fix: remove `'` solto, une tudo num único
+  `docker exec`, volta ao `bc scale=1` simples.
 
 ## [0.8.6] — 2026-09-06
 
