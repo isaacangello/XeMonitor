@@ -93,12 +93,11 @@ if netstat -tln 2>/dev/null | grep -q ":9000"; then
 else
     echo "AVISO: porta 9000 nao ouvindo (sem device)"
 fi
-# Kill direto (bypass OpenRC — cgroup v2 read-only no CI runner)
-pkill -f xemonitor-bridge 2>/dev/null || true
-sleep 1
-# Limpa cgroup orphaned se existir
-rmdir /sys/fs/cgroup/openrc/xemonitor-bridge 2>/dev/null || \
-rmdir /sys/fs/cgroup/openrc.xemonitor-bridge 2>/dev/null || true
+# Nao tentamos stop via OpenRC (cgroup v2 read-only no CI runner).
+# O servico ficara "started" no miniroot, mas o WSL2 importa com
+# OpenRC default, entao o servico sobe automaticamente no boot.
+# O kill/exit e' desnecessario — docker export captura o estado.
+: #nop
 '
 
 # Garantir estrutura de config no miniroot

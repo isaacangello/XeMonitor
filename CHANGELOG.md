@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.8.3] — 2026-09-06
+## [0.8.4] — 2026-09-06
 
 ### Fixed
 
@@ -8,7 +8,8 @@
   dentro do container Docker Alpine falhava com `start-stop-daemon: 1 process
   refused to stop` porque o runner do GitHub Actions tem `/sys/fs/cgroup`
   read-only (cgroup v2). O OpenRC não consegue criar/limpar seus cgroups.
-  Fix: kill direto do processo + `rmdir` do cgroup orphan.
+  Fix: remove stop inteiramente — o servico fica "started" no miniroot exportado
+  e o WSL2 importa ja' com OpenRC default, subindo no boot.
 
 ## [0.8.2] — 2026-09-04
 
