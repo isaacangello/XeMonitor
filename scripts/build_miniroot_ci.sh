@@ -107,8 +107,17 @@ docker exec "$CONTAINER" sh -c '
 # docker export = rootfs tarball (para WSL --import-into).
 echo "[miniroot-ci] exportando $TARBALL_PATH..."
 mkdir -p "$OUT_DIR"
-docker export "$CONTAINER" | gzip > "$TARBALL_PATH"
+TARBALL_TMP="$WORK_DIR/temp.tar.gz"
+echo "[miniroot-ci] exportando container..."
+docker export "$CONTAINER" > "$TARBALL_TMP"
+gzip -c "$TARBALL_TMP" > "$TARBALL_PATH"
+rm -f "$TARBALL_TMP"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+
+if [ ! -f "$TARBALL_PATH" ]; then
+    echo "[miniroot-ci] ERRO: tarball nao foi criado: $TARBALL_PATH" >&2
+    exit 1
+fi
 
 SIZE=$(stat -c '%s' "$TARBALL_PATH" 2>/dev/null || stat -f '%z' "$TARBALL_PATH" 2>/dev/null || echo "0")
 SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc 2>/dev/null || echo "?")
