@@ -115,8 +115,8 @@ mkdir -p "$OUT_DIR"
 docker export "$CONTAINER" | gzip > "$TARBALL_PATH"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
-SIZE=$(stat -c '%s' "$TARBALL_PATH" 2>/dev/null || stat -f '%z' "$TARBALL_PATH" 2>/dev/null)
-SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc 2>/dev/null || echo "?")
+SIZE=$(stat -c '%s' "$TARBALL_PATH" 2>/dev/null || stat -f '%z' "$TARBALL_PATH" 2>/dev/null || echo "0")
+SIZE_MB=$(printf "%.1f" "$(echo "$SIZE / 1048576" | bc -l 2>/dev/null || echo "0")")
 echo "[miniroot-ci] OK: $TARBALL_NAME gerado (${SIZE_MB} MB)"
 
 # Rolling 10
