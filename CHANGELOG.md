@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.9] — 2026-09-06
+
+### Fixed
+
+- **CI: miniroot build ainda não gerava arquivo visível** — `docker export |
+  gzip > file` resultava em step "succeeded" mas o PowerShell seguinte não achava
+  os arquivos (possível problema de atomicidade no CI runner). Fix: usar
+  `docker commit + docker save | gzip` em vez de `docker export | gzip`
+  (abordagem mais robusta, mesma do v0.8.0 que funcionou em produção).
+
 ## [0.8.7] — 2026-09-06
 
 ### Fixed
