@@ -107,9 +107,9 @@ docker exec "$CONTAINER" sh -c '
 # docker export = rootfs tarball (para WSL --import-into).
 echo "[miniroot-ci] exportando $TARBALL_PATH..."
 mkdir -p "$OUT_DIR"
-TARBALL_TMP="$WORK_DIR/temp.tar.gz"
+TARBALL_TMP="$WORK_DIR/temp.tar"
 echo "[miniroot-ci] exportando container..."
-docker export "$CONTAINER" > "$TARBALL_TMP"
+docker export "$CONTAINER" --output="$TARBALL_TMP"
 gzip -c "$TARBALL_TMP" > "$TARBALL_PATH"
 rm -f "$TARBALL_TMP"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
