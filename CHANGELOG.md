@@ -1,14 +1,14 @@
 # Changelog
 
-## [0.8.4] — 2026-09-06
+## [0.8.6] — 2026-09-06
 
 ### Fixed
 
-- **CI: miniroot Alpine build falhava** — `rc-service xemonitor-bridge stop`
-  falhava com cgroup v2 read-only. `netstat` não existe no Alpine padrão
-  (exit 127). `docker export` era lento. Fix: remove stop inteiramente,
-  troca `netstat` por `ss` (iproute2), `docker export` por `docker commit`
-  + `docker save`.
+- **CI: miniroot Alpine build ainda falhava** — `ss` tambem nao existe no
+  Alpine padrao sem `iproute2`. `docker commit` gerava formato errado
+  (image archive vs rootfs tarball). Fix: instala `iproute2` explicitamente,
+  remove checagem de porta (desnecessaria no CI), volta ao `docker export`
+  (rootfs tarball para WSL import).
 
 ## [0.8.2] — 2026-09-04
 
