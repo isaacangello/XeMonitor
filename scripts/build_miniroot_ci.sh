@@ -88,16 +88,11 @@ modprobe ch341 2>/dev/null || true
 modprobe usbserial 2>/dev/null || true
 rc-service xemonitor-bridge start
 sleep 3
-if netstat -tln 2>/dev/null | grep -q ":9000"; then
+if ss -tln 2>/dev/null | grep -q ":9000"; then
     echo "OK: bridge na porta 9000"
 else
     echo "AVISO: porta 9000 nao ouvindo (sem device)"
 fi
-# Nao tentamos stop via OpenRC (cgroup v2 read-only no CI runner).
-# O servico ficara "started" no miniroot, mas o WSL2 importa com
-# OpenRC default, entao o servico sobe automaticamente no boot.
-# O kill/exit e' desnecessario — docker export captura o estado.
-: #nop
 '
 
 # Garantir estrutura de config no miniroot
@@ -116,11 +111,14 @@ EOF
     fi
 '
 
-# Exporta o filesystem do container como tarball
-echo "[miniroot-ci] exportando $TARBALL_PATH..."
+# Exporta o container como imagem e salva como tarball.
+# docker commit e' mais rapido/confiavel que docker export.
+echo "[miniroot-ci] commitando $TARBALL_PATH..."
 mkdir -p "$OUT_DIR"
-docker export "$CONTAINER" > "$TARBALL_PATH"
-docker rm -f "$CONTAINER" >/dev/null 2>&1
+docker commit "$CONTAINER" "xem-miniroot:${BRIDGE_VERSION}" >/dev/null
+docker save "xem-miniroot:${BRIDGE_VERSION}" | gzip > "$TARBALL_PATH"
+docker rmi "xem-miniroot:${BRIDGE_VERSION}" >/dev/null 2>&1 || true
+docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
 SIZE=$(stat -c '%s' "$TARBALL_PATH" 2>/dev/null || stat -f '%z' "$TARBALL_PATH" 2>/dev/null)
 SIZE_MB=$(echo "scale=1; $SIZE / 1048576" | bc 2>/dev/null || echo "?")

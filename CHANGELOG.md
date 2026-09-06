@@ -5,11 +5,10 @@
 ### Fixed
 
 - **CI: miniroot Alpine build falhava** — `rc-service xemonitor-bridge stop`
-  dentro do container Docker Alpine falhava com `start-stop-daemon: 1 process
-  refused to stop` porque o runner do GitHub Actions tem `/sys/fs/cgroup`
-  read-only (cgroup v2). O OpenRC não consegue criar/limpar seus cgroups.
-  Fix: remove stop inteiramente — o servico fica "started" no miniroot exportado
-  e o WSL2 importa ja' com OpenRC default, subindo no boot.
+  falhava com cgroup v2 read-only. `netstat` não existe no Alpine padrão
+  (exit 127). `docker export` era lento. Fix: remove stop inteiramente,
+  troca `netstat` por `ss` (iproute2), `docker export` por `docker commit`
+  + `docker save`.
 
 ## [0.8.2] — 2026-09-04
 
