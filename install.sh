@@ -431,12 +431,30 @@ fi
 BIN_DIR="${PREFIX}/bin"
 log "instalando binarios em ${BIN_DIR}/..."
 sudo_run mkdir -p "$BIN_DIR"
+sudo_run mkdir -p "${PREFIX}/share/xemonitor/prev"
+
+# Backup do binario anterior (se existir) para restauracao em caso de
+# problema. Patch 5.0: forcava o usuario a reinstalar e perder o estado;
+# agora o binario antigo vai para ${PREFIX}/share/xemonitor/prev/<bin>.<ts>
+# (mantidos os 3 ultimos de cada binario, mais antigos removidos).
+backup_prev() {
+    local b="$1"
+    if [ -f "$BIN_DIR/$b" ] && [ "$DRY_RUN" = "0" ]; then
+        local ts
+        ts="$(date +%Y%m%d-%H%M%S)"
+        sudo_run cp -p "$BIN_DIR/$b" "${PREFIX}/share/xemonitor/prev/${b}.${ts}" 2>/dev/null || true
+        # Manter so os 3 backups mais recentes de cada binario.
+        sudo_run sh -c "ls -1t ${PREFIX}/share/xemonitor/prev/${b}.* 2>/dev/null | tail -n +4 | xargs -r rm -f" 2>/dev/null || true
+    fi
+}
 
 # Em --bridge-only, NAO instala cliente/GUI.
 if [ "$BRIDGE_ONLY" = "0" ]; then
+    backup_prev "xemonitor"
     sudo_run install -m 0755 "$TMP/xemonitor"      "$BIN_DIR/xemonitor"
     GUI_INSTALLED=0
     if [ -f "$TMP/xemonitor-gui" ] && [ "$GUI_AVAILABLE" = "1" ]; then
+        backup_prev "xemonitor-gui"
         sudo_run install -m 0755 "$TMP/xemonitor-gui" "$BIN_DIR/xemonitor-gui"
         GUI_INSTALLED=1
     elif [ -f "$TMP/xemonitor-gui" ]; then
@@ -449,6 +467,7 @@ fi
 
 # Em --client-only, NAO instala o bridge.
 if [ "$CLIENT_ONLY" = "0" ]; then
+    backup_prev "xemonitor-bridge"
     sudo_run install -m 0755 "$TMP/xemonitor-bridge" "$BIN_DIR/xemonitor-bridge"
 else
     log "--client-only: bridge nao sera instalado."
@@ -906,6 +925,38 @@ if [ "$VALIDATE" = "1" ] && [ "$SERVICE" = "1" ] && [ "$INIT" != "none" ] && [ "
             VALIDATION_FAILED=1
         else
             log "grupos de acesso serial efetivos."
+        fi
+    fi
+
+    # 16f. Smoke test de leitura serial: roda o bridge em foreground por 5s
+    # e checa se houve bytes lidos. Se ZERO bytes, o servico pode estar
+    # rodando mas o scanner nao esta respondendo (DTR/RTS, driver errado,
+    # scanner em modo HID, cabo ruim, etc.). Patch 5.1.
+    #
+    # NAO falha o install (VALIDATION_FAILED=0) porque o usuario pode estar
+    # rodando em VM/container sem scanner fisico - apenas AVISA.
+    if [ -e "$DETECTED_DEVICE" ] && [ -x "$BIN_DIR/xemonitor-bridge" ]; then
+        log "smoke test de leitura serial (5s, foreground)..."
+        if command -v timeout >/dev/null 2>&1; then
+            # Captura a saida em arquivo (evita problemas com ${sudo_run}
+            # dentro de command substitution - o timeout 5s roda como root
+            # via sudo_run e escreve em /tmp/xm-smoke-<ts>.log).
+            SMOKE_LOG="/tmp/xm-smoke-$$.log"
+            sudo_run timeout 5 "$BIN_DIR/xemonitor-bridge" --device "$DETECTED_DEVICE" --tcp-port 9001 --verbose > "$SMOKE_LOG" 2>&1 || true
+            if [ -f "$SMOKE_LOG" ] && grep -q "serial read [1-9]" "$SMOKE_LOG"; then
+                log "smoke test OK: bridge leu bytes do scanner."
+            elif [ -f "$SMOKE_LOG" ] && grep -q "DTR+RTS nao confirmados" "$SMOKE_LOG"; then
+                warn "smoke test: DTR/RTS nao acionados (driver ou scanner pode nao responder)."
+                warn "  o bridge pode ler normalmente (veja KNOWN_ISSUES #5b) ou ficar mudo."
+                warn "  se o scanner nao responder apos bipar: verifique cabo USB, modo do scanner (Serial), e Programming Guide."
+            else
+                warn "smoke test: nenhum byte lido em 5s. Scanner nao respondeu."
+                warn "  verifique: (1) cabo USB de dados, (2) scanner em modo Serial, (3) CH340 conectado."
+                warn "  leia: ${BIN_DIR}/xemonitor-diagnose --check"
+            fi
+            rm -f "$SMOKE_LOG"
+        else
+            debug "smoke test pulado (timeout nao disponivel)."
         fi
     fi
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.8.3] — 2026-09-06
+
+### Fixed
+
+- **CI: miniroot Alpine build falhava** — `rc-service xemonitor-bridge stop`
+  dentro do container Docker Alpine falhava com `start-stop-daemon: 1 process
+  refused to stop` porque o runner do GitHub Actions tem `/sys/fs/cgroup`
+  read-only (cgroup v2). O OpenRC não consegue criar/limpar seus cgroups.
+  Fix: kill direto do processo + `rmdir` do cgroup orphan.
+
 ## [0.8.2] — 2026-09-04
 
 ### Fixed

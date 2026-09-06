@@ -93,7 +93,12 @@ if netstat -tln 2>/dev/null | grep -q ":9000"; then
 else
     echo "AVISO: porta 9000 nao ouvindo (sem device)"
 fi
-rc-service xemonitor-bridge stop
+# Kill direto (bypass OpenRC — cgroup v2 read-only no CI runner)
+pkill -f xemonitor-bridge 2>/dev/null || true
+sleep 1
+# Limpa cgroup orphaned se existir
+rmdir /sys/fs/cgroup/openrc/xemonitor-bridge 2>/dev/null || \
+rmdir /sys/fs/cgroup/openrc.xemonitor-bridge 2>/dev/null || true
 '
 
 # Garantir estrutura de config no miniroot
