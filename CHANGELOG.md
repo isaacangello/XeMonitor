@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.8.10] — 2026-09-06
+
+### Changed
+
+- **Build do miniroot movido para o host** — o `release.yml` não compila mais
+  o miniroot no CI (Docker) por causa de instabilidades
+  (`docker export/save`, `ss`/`netstat`, quoting de heredoc). O miniroot agora é
+  gerado localmente (`zig build bridge -Doptimize=ReleaseSafe` +
+  `scripts/build_miniroot_ci.sh`) e commitado em
+  `packaging/windows/miniroots/alpine-bridge-<version>.<build>.tar.gz`. O CI só
+  empacota. Documentação em `docs/bridge-versioning.md`.
+- **Miniroot 0.8.9.006 empacotado** — gerado a partir do bridge ReleaseSafe
+  0.8.9 build 006 (11.1 MB, Alpine 3.24 com OpenRC, eudev, ch341, iproute2).
+
 ## [0.8.9] — 2026-09-06
 
 ### Fixed

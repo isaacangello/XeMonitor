@@ -11,8 +11,12 @@ dist/
 # Config gerada pelos scripts de run (paths por máquina)
 xemonitor-gui.conf
 
-# Miniroot / golden images (geradas por build_miniroot.sh; so .gitkeep versionado)
+# Miniroot / golden images (geradas por build_miniroot.sh; CI usa as commitadas)
+# Por política, APENAS as versoes explicitamente liberadas sao commitadas;
+# use `git add -f packaging/windows/miniroots/alpine-bridge-<ver>.<build>.tar.gz`
+# apos gerar e validar localmente. Rolling 10 no build_miniroot_ci.sh.
 packaging/windows/miniroots/*.tar.gz
+!packaging/windows/miniroots/alpine-bridge-current.tar.gz
 packaging/windows/golden/
 
 # Binarios de diagnostico compilados (fontes .zig em tools/ sao versionadas)
