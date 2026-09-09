@@ -483,6 +483,14 @@ const LogLine = struct {
     line: []u8,
 };
 
+/// Fila de scans recebidos via SSE (worker thread -> UI thread). Mesma
+/// estrategia do client stderr reader: append em mutex, drain no main loop.
+const HistorySseQueue = struct {
+    mutex: std.Io.Mutex = .init,
+    items: std.ArrayList([]u8) = .empty,
+    stopping: bool = false,
+};
+
 const App = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -509,6 +517,9 @@ const App = struct {
     status_at: i128 = 0,
     status_buf: [256]u8 = undefined,
     status_len: usize = 0,
+    history_status_buf: [256]u8 = undefined,
+    history_status_len: usize = 0,
+    bridge_status_buf: [256]u8 = undefined,
 
     last_scan_time_ns: i128 = 0,
     watchdog_state: u8 = 0,
@@ -533,6 +544,19 @@ const App = struct {
     quit_confirm_open: bool = false,
     quit_confirm_result: ConfirmResult = .none,
     locale: i18n.Locale = .us,
+
+    // ---------- History SSE (real-time scans via bridge --http) ----------
+    // worker_running indica que o HistoryWorker esta spawnado.
+    // connected indica conexao SSE ativa. connected_at = quando conectou (ns).
+    // http_port = porta HTTP do bridge (padrao 9001). thread_handle = handle
+    // da thread para join no deinit.
+    history_port: u16 = 9001,
+    history_sse_queue: HistorySseQueue = .{},
+    history_worker_running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    history_worker_stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    history_connected: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    history_connecting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    history_connected_at: i128 = 0,
 
     fn init(gpa: std.mem.Allocator, io: std.Io) App {
         const path = paths.joinPath(gpa, gui_cfg_dir.path, CONFIG_FILE) orelse (gpa.dupe(u8, CONFIG_FILE) catch CONFIG_FILE);
@@ -586,6 +610,7 @@ const App = struct {
     }
 
     fn deinit(self: *App) void {
+        stopHistoryWorker(self);
         stopBridge(self);
         stopClient(self);
         for (self.log_lines.items) |ll| self.gpa.free(ll.line);
@@ -747,6 +772,213 @@ fn drainClientLines(app: *App) void {
         app.gpa.free(line);
     }
     drained.deinit(app.gpa);
+}
+
+/// Drena scans recebidos pelo HistorySseQueue (worker thread). Cada item é o
+/// codigo de barras ja extraido (sem o JSON cru). Chamado no main loop.
+fn drainHistorySse(app: *App) void {
+    app.history_sse_queue.mutex.lock(app.io) catch return;
+    var drained = app.history_sse_queue.items;
+    app.history_sse_queue.items = .empty;
+    app.history_sse_queue.mutex.unlock(app.io);
+    for (drained.items) |code| {
+        pushScan(app, code);
+        app.gpa.free(code);
+    }
+    drained.deinit(app.gpa);
+}
+
+/// Enfileira um codigo de barras recebido via SSE (chamado pelo worker
+/// thread). Se stopping, dropa.
+fn historyEnqueueCode(app: *App, code: []const u8) void {
+    const dup = app.gpa.dupe(u8, code) catch return;
+    app.history_sse_queue.mutex.lock(app.io) catch {
+        app.gpa.free(dup);
+        return;
+    };
+    if (app.history_sse_queue.stopping) {
+        app.history_sse_queue.mutex.unlock(app.io);
+        app.gpa.free(dup);
+        return;
+    }
+    app.history_sse_queue.items.append(app.gpa, dup) catch {
+        app.history_sse_queue.mutex.unlock(app.io);
+        app.gpa.free(dup);
+        return;
+    };
+    app.history_sse_queue.mutex.unlock(app.io);
+}
+
+/// Extrai o valor de "code":"..." de uma string JSON simples. Procuramos
+/// apenas a chave `code` (a unica que o bridge emite no SSE payload). Sem
+/// alocacao; retorna slice do buffer de entrada.
+fn jsonExtractCode(json: []const u8) ?[]const u8 {
+    const needle = "\"code\":\"";
+    const start = std.mem.indexOf(u8, json, needle) orelse return null;
+    const code_start = start + needle.len;
+    // Termina na proxima aspa nao escapada (suporta \" como sequencia).
+    var i: usize = code_start;
+    while (i < json.len) : (i += 1) {
+        if (json[i] == '"' and (i == 0 or json[i - 1] != '\\')) break;
+    }
+    if (i >= json.len) return null;
+    return json[code_start..i];
+}
+
+/// Envia bytes no socket; retorna true se OK. Helper do worker SSE.
+fn sockSend(stream: std.Io.net.Stream, io: std.Io, data: []const u8) bool {
+    var buf: [256]u8 = undefined;
+    var w = stream.writer(io, &buf);
+    w.interface.writeAll(data) catch return false;
+    w.interface.flush() catch return false;
+    return true;
+}
+
+/// Le bytes do socket. Retorna numero de bytes lidos (0 = EOF).
+fn sockRead(stream: std.Io.net.Stream, io: std.Io, out: []u8) !usize {
+    var buf: [256]u8 = undefined;
+    var r = stream.reader(io, &buf);
+    const n = r.interface.readSliceShort(out) catch |err| return err;
+    return n;
+}
+
+/// Loop principal do worker SSE: conecta, le eventos, reconecta com backoff.
+/// Roda em thread separada; nao toca estado da UI diretamente (so via queue
+/// e atomics).
+fn historyWorker(app: *App) void {
+    defer app.history_worker_running.store(false, .seq_cst);
+
+    var backoff_ms: u64 = 1000;
+    while (!app.history_worker_stop.load(.seq_cst)) {
+        // Tenta conectar.
+        var addr_buf: [64]u8 = undefined;
+        const addr_str = std.fmt.bufPrint(&addr_buf, "127.0.0.1:{d}", .{app.history_port}) catch break;
+        const address = std.Io.net.IpAddress.parseLiteral(addr_str) catch {
+            sleepBackoff(app, &backoff_ms);
+            continue;
+        };
+
+        app.history_connecting.store(true, .seq_cst);
+        var stream = address.connect(app.io, .{ .mode = .stream }) catch {
+            app.history_connecting.store(false, .seq_cst);
+            sleepBackoff(app, &backoff_ms);
+            continue;
+        };
+        defer stream.close(app.io);
+
+        // Envia GET /stream.
+        const req = "GET /stream HTTP/1.1\r\nHost: 127.0.0.1\r\nAccept: text/event-stream\r\n\r\n";
+        if (!sockSend(stream, app.io, req)) {
+            app.history_connecting.store(false, .seq_cst);
+            continue;
+        }
+
+        // Le a resposta HTTP (headers ate \r\n\r\n). Descarta os headers,
+        // mantem o que vem depois (o stream SSE).
+        var header_buf: [4096]u8 = undefined;
+        var header_len: usize = 0;
+        var got_double_crlf = false;
+        while (header_len < header_buf.len) {
+            const n = sockRead(stream, app.io, header_buf[header_len..]) catch {
+                app.history_connecting.store(false, .seq_cst);
+                got_double_crlf = false;
+                break;
+            };
+            if (n == 0) {
+                got_double_crlf = false;
+                break;
+            }
+            header_len += n;
+            if (std.mem.indexOf(u8, header_buf[0..header_len], "\r\n\r\n")) |_| {
+                got_double_crlf = true;
+                break;
+            }
+        }
+
+        if (!got_double_crlf) {
+            app.history_connecting.store(false, .seq_cst);
+            sleepBackoff(app, &backoff_ms);
+            continue;
+        }
+
+        // Conexao estabelecida.
+        app.history_connecting.store(false, .seq_cst);
+        app.history_connected.store(true, .seq_cst);
+        app.history_connected_at = app.nowNs();
+        backoff_ms = 1000;
+        postAsyncFmt(app, "msg_history_connected", .{app.history_port});
+
+        // Le eventos SSE ate a conexao cair. Cada evento termina com \n\n.
+        // Processa linha-a-linha: "data: ..." -> enfileira codigo.
+        var pending: std.ArrayList(u8) = .empty;
+        defer pending.deinit(app.gpa);
+        var read_buf: [4096]u8 = undefined;
+        while (!app.history_worker_stop.load(.seq_cst)) {
+            const n = sockRead(stream, app.io, &read_buf) catch {
+                break;
+            };
+            if (n == 0) break; // EOF
+            var i: usize = 0;
+            while (i < n) {
+                const nl = std.mem.indexOfScalarPos(u8, read_buf[0..n], i, '\n') orelse {
+                    pending.appendSlice(app.gpa, read_buf[i..n]) catch break;
+                    i = n;
+                    break;
+                };
+                pending.appendSlice(app.gpa, read_buf[i..nl]) catch break;
+                // Processa a linha (sem o \n).
+                const line = pending.items;
+                if (line.len > 5 and std.mem.startsWith(u8, line, "data:")) {
+                    const data = std.mem.trim(u8, line[5..], " \t\r");
+                    if (jsonExtractCode(data)) |code| {
+                        historyEnqueueCode(app, code);
+                    }
+                }
+                pending.clearRetainingCapacity();
+                i = nl + 1;
+            }
+        }
+
+        app.history_connected.store(false, .seq_cst);
+        postAsyncFmt(app, "msg_history_disconnected", .{});
+    }
+
+    // Limpa fila.
+    app.history_sse_queue.mutex.lock(app.io) catch return;
+    app.history_sse_queue.stopping = true;
+    var to_free = app.history_sse_queue.items;
+    app.history_sse_queue.items = .empty;
+    for (to_free.items) |c| app.gpa.free(c);
+    to_free.deinit(app.gpa);
+    app.history_sse_queue.mutex.unlock(app.io);
+}
+
+fn sleepBackoff(app: *App, backoff_ms: *u64) void {
+    if (app.history_worker_stop.load(.seq_cst)) return;
+    // Limita o sleep a 1s para checar a flag de stop com granularidade.
+    const step: u64 = @min(backoff_ms.*, 1000);
+    std.Io.sleep(app.io, std.Io.Duration.fromMilliseconds(@intCast(step)), .awake) catch {};
+    backoff_ms.* = @min(backoff_ms.* * 2, 30000);
+}
+
+/// Spawna o HistoryWorker thread. Idempotente: se ja rodando, noop.
+fn startHistoryWorker(app: *App) void {
+    if (app.history_worker_running.load(.seq_cst)) return;
+    app.history_worker_stop.store(false, .seq_cst);
+    app.history_sse_queue.stopping = false;
+    app.history_worker_running.store(true, .seq_cst);
+    const t = std.Thread.spawn(.{}, historyWorker, .{app}) catch {
+        app.history_worker_running.store(false, .seq_cst);
+        return;
+    };
+    t.detach();
+}
+
+/// Para o HistoryWorker (sinaliza stop, deixa a thread sair sozinha).
+fn stopHistoryWorker(app: *App) void {
+    app.history_worker_stop.store(true, .seq_cst);
+    // Drena fila mesmo se worker estiver parando.
+    drainHistorySse(app);
 }
 
 /// Data de hoje em "YYYY-MM-DD" (usada para o arquivo de log datado).
@@ -991,10 +1223,25 @@ fn startBridge(app: *App) void {
             return;
         };
         defer app.gpa.free(port_str);
+        // --http habilita o servidor HTTP/SSE (porta 9001) na mesma bridge,
+        // para o HistoryWorker da GUI receber scans em tempo real. Sem isso,
+        // o historico da GUI so atualiza via [scan] do log (lento, parseado).
+        const http_port_str = std.fmt.allocPrint(app.gpa, "{d}", .{app.history_port}) catch "9001";
+        defer app.gpa.free(http_port_str);
         const argv: []const []const u8 = if (app.cfg.bridge_path.len > 0)
-            &.{ app.cfg.bridge_path, "--tcp-port", port_str }
+            &.{
+                app.cfg.bridge_path,
+                "--tcp-port", port_str,
+                "--http",
+                "--http-port", http_port_str,
+            }
         else
-            &.{ "xemonitor-bridge", "--tcp-port", port_str };
+            &.{
+                "xemonitor-bridge",
+                "--tcp-port", port_str,
+                "--http",
+                "--http-port", http_port_str,
+            };
         app.bridge.start(app.io, argv) catch |err| {
             app.setMsg("msg_bridge_start_failed", .{@errorName(err)});
             return;
@@ -1002,18 +1249,27 @@ fn startBridge(app: *App) void {
         app.bridge_is_ours = true;
         app.started_this_session = true;
         app.setMsg("msg_bridge_subprocess_started", .{app.bridge_port});
+        // Subprocesso: bridge local com --http, SSE funciona.
+        startHistoryWorker(app);
     } else if (isMode(app, "systemd-user")) {
         systemdAction(app, "--user", "start");
+        // Assume que a unit tem --http no ExecStart; senao o worker loga
+        // msg_history_bridge_no_http via debug print e segue tentando.
+        startHistoryWorker(app);
     } else if (isMode(app, "systemd-system")) {
         systemdAction(app, "", "start");
+        startHistoryWorker(app);
     } else if (isMode(app, "wsl")) {
         wslAction(app, "start");
+        // WSL roda bridge via bridge_ctl; assumimos que a unit tem --http.
+        startHistoryWorker(app);
     } else {
         app.setMsg("msg_mode_unknown", .{app.cfg.server_mode});
     }
 }
 
 fn stopBridge(app: *App) void {
+    stopHistoryWorker(app);
     if (isMode(app, "subprocess")) {
         app.bridge.stop(app.io);
         app.bridge_is_ours = false;
@@ -1196,19 +1452,76 @@ fn stopClient(app: *App) void {
 fn renderServerPanel(app: *App) void {
     dvui.labelNoFmt(@src(), i18n.t("panel_server"), .{}, .{ .font = .theme(.heading) });
 
+    // Linha 1: status do bridge (modo principal, atualizado por refreshStatus)
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
     defer row.deinit();
     dvui.labelNoFmt(@src(), i18n.t("label_status"), .{}, .{});
     dvui.labelNoFmt(@src(), app.status_buf[0..app.status_len], .{}, .{});
 
-    var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    // Linha 2: Bridge: <status>  |  Histórico: <status SSE>
+    // (buffers separados para evitar a oscilação/flicker)
+    const bridge_status = if (isMode(app, "subprocess"))
+        if (app.bridge.running.load(.seq_cst))
+            i18n.formatInto(&app.bridge_status_buf, i18n.t("status_subprocess_short"), .{app.bridge_port})
+        else
+            i18n.t("status_stopped")
+    else if (isMode(app, "wsl") and os == .windows)
+        if (portIsOpen(app.io, app.cfg.tcp_host, app.cfg.tcp_port))
+            i18n.t("status_wsl_running")
+        else
+            i18n.t("status_wsl_stopped")
+    else if (isMode(app, "systemd-user") and os == .linux)
+        if (runSystemdStatus(app, "--user"))
+            i18n.t("status_running")
+        else
+            i18n.t("status_stopped")
+    else if (isMode(app, "systemd-system") and os == .linux)
+        if (runSystemdStatus(app, ""))
+            i18n.t("status_running")
+        else
+            i18n.t("status_stopped")
+    else
+        i18n.t("status_mode_unknown");
+
+    const history_connected = app.history_connected.load(.seq_cst);
+    const history_connecting = app.history_connecting.load(.seq_cst);
+    const history_status_val = if (history_connected)
+        i18n.formatInto(&app.history_status_buf, i18n.t("status_history_connected"), .{app.history_port})
+    else if (history_connecting)
+        i18n.formatInto(&app.history_status_buf, i18n.t("status_history_connecting"), .{app.history_port})
+    else if (app.history_worker_running.load(.seq_cst))
+        i18n.t("status_history_disconnected")
+    else
+        i18n.t("status_history_disconnected");
+
+    var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 2, .h = 2 } });
     defer row2.deinit();
+    dvui.labelNoFmt(@src(), "Bridge:", .{}, .{ .color_text = dvui.Color.gray });
+    const bridge_ok = std.mem.indexOf(u8, bridge_status, i18n.t("status_running")) != null or
+        std.mem.indexOf(u8, bridge_status, i18n.t("status_wsl_running")) != null;
+    const bridge_color: dvui.Color = if (bridge_ok)
+        dvui.Color{ .r = 0x4c, .g = 0xb3, .b = 0x4c, .a = 255 }
+    else
+        dvui.Color{ .r = 0xb3, .g = 0x4d, .b = 0x4d, .a = 255 };
+    dvui.labelNoFmt(@src(), bridge_status, .{}, .{ .color_text = bridge_color });
+    dvui.labelNoFmt(@src(), " | Histórico:", .{}, .{ .color_text = dvui.Color.gray });
+    const hist_color: dvui.Color = if (history_connected)
+        dvui.Color{ .r = 0x4c, .g = 0xb3, .b = 0x4c, .a = 255 }
+    else if (history_connecting)
+        dvui.Color{ .r = 0xe6, .g = 0x99, .b = 0x1a, .a = 255 }
+    else
+        dvui.Color{ .r = 0xb3, .g = 0x4d, .b = 0x4d, .a = 255 };
+    dvui.labelNoFmt(@src(), history_status_val, .{}, .{ .color_text = hist_color });
+
+    // Linha 3: botões + mode + porta
+    var row3 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
+    defer row3.deinit();
     if (dvui.button(@src(), i18n.t("btn_start"), .{}, .{})) startBridge(app);
     if (dvui.button(@src(), i18n.t("btn_stop"), .{}, .{})) stopBridge(app);
     if (isMode(app, "wsl") and os == .windows) {
         dvui.labelNoFmt(@src(), "  ", .{}, .{});
         const repairing = app.repair_busy.load(.seq_cst);
-        const repair_color: ?dvui.Color = if (repairing) .gray else null;
+        const repair_color: ?dvui.Color = if (repairing) dvui.Color.gray else null;
         if (dvui.button(@src(), i18n.t("btn_repair"), .{}, .{ .color_text = repair_color })) {
             if (!repairing) startRepair(app);
         }
@@ -1417,6 +1730,7 @@ fn guiFrame(app: *App) bool {
     refreshStatus(app);
     drainAsyncMsg(app);
     drainClientLines(app);
+    drainHistorySse(app);
 
     var vbox = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .both, .margin = .{ .x = 8, .y = 8, .w = 8, .h = 8 }, .background = true, .name = "root" });
     defer vbox.deinit();

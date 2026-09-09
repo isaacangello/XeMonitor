@@ -17,7 +17,8 @@ pidfile="/run/${RC_SVCNAME}.pid"
 # command_opts é populado em start_pre() a partir de /etc/xemonitor/device
 # (gravado pelo install.sh/install_windows.bat) ou /etc/conf.d/xemonitor-bridge (override manual).
 # Fallback: auto-detecta CH340 via by-id -> udevadm -> /dev/ttyUSB0
-command_args="--device ${device:-/dev/ttyUSB0}"
+# --http habilita modo híbrido TCP + HTTP/SSE (porta 9001) para histórico em tempo real
+command_args="--http --device ${device:-/dev/ttyUSB0}"
 
 depend() {
     # TCP server na porta 9000. No WSL a rede vem do host e o servico
@@ -31,7 +32,7 @@ start_pre() {
     if [ -f /etc/xemonitor/device ]; then
         . /etc/xemonitor/device
         if [ -n "${DEVICE:-}" ] && [ -e "${DEVICE}" ]; then
-            command_args="--device ${DEVICE}"
+            command_args="--http --device ${DEVICE}"
             return 0
         fi
     fi
@@ -66,13 +67,13 @@ start_pre() {
 
     # 3. Usar device detectado
     if [ -n "$dev" ] && [ -e "$dev" ]; then
-        command_args="--device $dev"
+        command_args="--http --device $dev"
         # Persistir para próximas boots
         mkdir -p /etc/xemonitor
         echo "DEVICE=$dev" > /etc/xemonitor/device
         echo "device=$dev" > /etc/conf.d/xemonitor-bridge
     else
-        command_args="--device /dev/ttyUSB0"  # último recurso
+        command_args="--http --device /dev/ttyUSB0"  # último recurso
     fi
     return 0
 }

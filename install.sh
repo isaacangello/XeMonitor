@@ -780,7 +780,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/bin/bash -c 'set -a; source /etc/xemonitor/device 2>/dev/null; set +a; exec /usr/local/bin/xemonitor-bridge --device "\${DEVICE:-/dev/ttyUSB0}"'
+ExecStart=/bin/bash -c 'set -a; source /etc/xemonitor/device 2>/dev/null; set +a; exec /usr/local/bin/xemonitor-bridge --http --device "\${DEVICE:-/dev/ttyUSB0}"'
 Restart=always
 RestartSec=3
 

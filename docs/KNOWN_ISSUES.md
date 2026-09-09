@@ -27,6 +27,24 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
   em `configureSerial`. Teste definitivo: `sleep(1s)` em python lia o scan
   limpo a 115200; o fix de 200ms no bridge confirmou o mesmo resultado.
 
+## 2b. Serial — constante TIOCM_BIS trocada (0x5417 = TIOCMBIC/clear)
+- **Sintoma**: bridge logava `DTR+RTS nao confirmados (status=0x20)` e o
+  scanner **nunca transmitia** (zero bytes), mesmo com o delay 200ms presente.
+- **Causa raiz**: em `src/bridge.zig` a constante estava
+  `TIOCM_BIS = 0x5417`, mas **0x5417 é TIOCMBIC (clear bits)**, não TIOCMBIS.
+  O `ioctl` então **LIMPAVA** DTR/RTS em vez de setá-los. Como o ch341 já
+  seta DTR/RTS no `open()` (baseline `0x26`), o ioctl errado derrubava as
+  linhas (`0x20`, só CTS) e o Honeywell ficava mudo.
+- **Fix (não reverter)**: `TIOCM_BIS = 0x5416` (TIOCMBIS, set bits).
+  Prova empírica (2026-09-09, CachyOS/ch341 nativo):
+  - `ioctl 0x5416` com DTR|RTS → `TIOCMGET` = `0x26` (DTR,RTS,CTS) ✓
+  - `ioctl 0x5417` com DTR|RTS → `TIOCMGET` = `0x20` (só CTS) ✗
+  - Bridge com `0x5416` loga `DTR+RTS: ok (status=0x26)` e o scan físico
+    volta a funcionar (`6971695581003`, `7898567704461` → injected + enter).
+- **Anti-regra**: não "corrigir" a constante `0x5416` p/ `0x5417` acreditando
+  que é só um número. Conferir `asm-generic/ioctls.h`:
+  `TIOCMBIS=0x5416` (set), `TIOCMBIC=0x5417` (clear).
+
 ## 3. WSL Alpine — udev NÃO roda, `/dev/serial/by-id/` nunca existe
 - **Sintoma**: instalador gravava um caminho **by-id fixo** em
   `/etc/xemonitor/device`; o bridge tentava abrir device inexistente →
@@ -224,6 +242,8 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
 
 - **NÃO remover** o `ioctl(TIOCMBIS)` DTR/RTS nem o `sleepNs(200ms)` do
   `src/bridge.zig`.
+- **NÃO** trocar `TIOCM_BIS` p/ `0x5417` (é TIOCMBIC/clear, limpa DTR/RTS
+  e deixa o scanner mudo). Manter `0x5416` (TIOCMBIS/set). Ver issue 2b.
 - **NÃO** usar `/dev/serial/by-id/` como device fixo no WSL Alpine.
 - **NÃO** bumpar versão editando mais de 2 arquivos (VERSION + rc).
 - **NÃO** usar `#include` de texto puro no ISPP; usar `-DMyAppVersion`.

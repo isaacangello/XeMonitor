@@ -9,7 +9,9 @@ Type=simple
 # `DEVICE=<path>`. O bridge detecta o device automaticamente se a variável
 # DEVICE não estiver setada (autodetect via /dev/serial/by-id -> ttyUSB* ->
 # ttyACM* -> /dev/ttyUSB0). Source permite override manual sem editar a unit.
-ExecStart=/bin/bash -c 'set -a; source /etc/xemonitor/device 2>/dev/null; set +a; exec /usr/local/bin/xemonitor-bridge --device "${DEVICE:-/dev/ttyUSB0}"'
+# --http: modo hibrido TCP + HTTP/SSE (porta 9001 default). Necessário para a
+# GUI (xemonitor-gui) receber o histórico de scans em tempo real via SSE.
+ExecStart=/bin/bash -c 'set -a; source /etc/xemonitor/device 2>/dev/null; set +a; exec /usr/local/bin/xemonitor-bridge --http --device "${DEVICE:-/dev/ttyUSB0}"'
 Restart=always
 RestartSec=3
 

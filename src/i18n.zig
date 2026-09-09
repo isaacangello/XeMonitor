@@ -107,6 +107,7 @@ const us = .{
     .status_log_empty = "(log empty)",
     .subtitle = "scanner -> bridge (TCP) -> keyboard injection",
     .status_subprocess = "running (subprocess, port {d})",
+    .status_subprocess_short = "subprocess :{d}",
     .status_systemd_user_running = "running (systemd user)",
     .status_systemd_user_stopped = "stopped (systemd user)",
     .status_systemd_running = "running (systemd)",
@@ -155,6 +156,12 @@ const us = .{
     .press_enter = "press Enter to close",
     .tray_show = "Show window",
     .tray_quit = "Quit",
+    .status_history_connected = "  history: SSE connected (:{d})",
+    .status_history_disconnected = "  history: SSE disconnected (reconnecting...)",
+    .status_history_connecting = "  history: SSE connecting (:{d})...",
+    .msg_history_connected = "history SSE connected (port {d})",
+    .msg_history_disconnected = "history SSE disconnected (auto-reconnect in 1s)",
+    .msg_history_bridge_no_http = "bridge does not have HTTP/SSE enabled. Restart the bridge with --http (Linux/macOS) or update systemd unit ExecStart to include --http (Windows: re-run installer).",
 };
 
 const pt_br = .{
@@ -229,4 +236,11 @@ const pt_br = .{
     .press_enter = "pressione Enter para fechar",
     .tray_show = "Mostrar janela",
     .tray_quit = "Sair",
+    .status_subprocess_short = "subprocesso :{d}",
+    .status_history_connected = "  histórico: SSE conectado (:{d})",
+    .status_history_disconnected = "  histórico: SSE desconectado",
+    .status_history_connecting = "  histórico: SSE conectando (:{d})...",
+    .msg_history_connected = "histórico SSE conectado (porta {d})",
+    .msg_history_disconnected = "histórico SSE desconectado (reconexão em ~1s)",
+    .msg_history_bridge_no_http = "bridge não tem HTTP/SSE ativo. Reinicie o bridge com --http (Linux/macOS) ou atualize a unit systemd ExecStart com --http (Windows: rode o instalador novamente).",
 };

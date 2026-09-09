@@ -29,8 +29,11 @@ else
 fi
 echo
 
-echo "--- Servico systemd (sistema/root) 'xemonitor-bridge' ---"
+echo "--- Servico systemd 'xemonitor-bridge' ---"
+echo "  unit de SISTEMA (root):"
 systemctl status xemonitor-bridge --no-pager 2>&1 | grep -E "Loaded|Active|Main PID|CGroup" || true
+echo "  unit de USUARIO (padrao):"
+systemctl --user status xemonitor-bridge --no-pager 2>&1 | grep -E "Loaded|Active|Main PID|CGroup" || true
 echo
 
 echo "--- xemonitor-gui ---"

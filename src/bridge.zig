@@ -41,6 +41,11 @@ const Mutex = struct {
 };
 
 const TCP_PORT: u16 = 9000;
+/// Porta HTTP/SSE para GUI/dashboard. Padrao 9001 (TCP+1); se ocupada,
+/// tenta 9002..9010 automaticamente. Use --http-port para fixar.
+const HTTP_PORT_DEFAULT: u16 = TCP_PORT + 1;
+/// Faixa para auto-fallback quando a porta padrao estiver ocupada.
+const HTTP_PORT_FALLBACK_END: u16 = 9010;
 const BAUD_DEFAULT: u32 = 115200;
 const SERIAL_DEFAULT = "/dev/ttyUSB0";
 const CONFIG_PATH = "/etc/xemonitor/bridge.conf";
@@ -57,7 +62,7 @@ const TIOCM_DSR: c_int = 0x100;
 const TIOCM_CAR: c_int = 0x040;
 const TIOCM_RNG: c_int = 0x080;
 const TIOCM_GET: c_ulong = 0x5415;
-const TIOCM_BIS: c_ulong = 0x5417;
+const TIOCM_BIS: c_ulong = 0x5416; // TIOCMBIS (set bits) — 0x5417 é TIOCMBIC (clear)
 
 /// Versao do bridge, injetada via `@import("build_options")` (build.zig -> addOptions).
 /// Default "dev" se o modulo nao estiver disponivel (build manual via `zig run`).
@@ -77,6 +82,9 @@ fn versionFull() []const u8 {
 }
 
 var verbose: bool = false;
+/// Porta HTTP efetivamente bindada (com fallback se a padrao estiver ocupada).
+/// Setada em runHttpMode antes do accept loop. Lida por --print-http-port.
+var http_port_effective: u16 = HTTP_PORT_DEFAULT;
 
 /// Auto-detecta o device USB-serial. Ordem:
 ///   1) /dev/serial/by-id/*  (symlinks do udev; mais estavel entre reboots)
@@ -270,10 +278,13 @@ fn usage() void {
         \\  bridge --tcp-port <n>        raw TCP server on a custom port
         \\  bridge --device <path>       serial device (default: autodetect)
         \\  bridge --baud <rate>         serial baud rate (default: 115200)
-        \\  bridge -s <url>              HTTP server (e.g. http://0.0.0.0:8080)
-        \\  bridge --fake-scan <ms>      push a fake 'TEST<n>' code every <ms> ms (no hardware needed)
+        \\  bridge --http                also start HTTP/SSE server (GUI history)
+        \\  bridge --http-port <n>       HTTP/SSE port (default: 9001 = TCP+1)
+        \\  bridge -s <url>              HTTP server only (e.g. http://0.0.0.0:9001)
+        \\  bridge --fake-scan <ms>      push a fake 'TEST<n>' code every <ms> ms
         \\  bridge --verbose              log every serial read (diagnostics)
         \\  bridge --print-device         print autodetected serial path and exit
+        \\  bridge --print-http-port      print effective HTTP port and exit
         \\  bridge -h                    show this help
         \\
         \\Config file: /etc/xemonitor/bridge.conf (optional; CLI overrides)
@@ -284,7 +295,8 @@ fn usage() void {
         \\  bridge --tcp-port 9001
         \\  bridge --device /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
         \\  bridge --baud 9600
-        \\  bridge -s http://0.0.0.0:8080
+        \\  bridge -s http://0.0.0.0:9001
+        \\  bridge --http --http-port 9001
         \\  bridge --fake-scan 2000
         \\  bridge --verbose
         \\
@@ -495,32 +507,84 @@ fn runTcpMode(port: u16, fake_scan_ms: ?u64) !void {
     }
 }
 
-// ---- HTTP mode (-s flag) ----
+// ---- HTTP mode (-s flag ou --http) ----
+//
+// CORS habilitado (Access-Control-Allow-Origin: *) para que a GUI (host
+// diferente quando roda em WSL/Windows ou como processo separado) possa
+// conectar sem preflight. Em execucao local pura (127.0.0.1) nao seria
+// estritamente necessario, mas o custo e zero.
 
 fn sendHttpOk(fd: c_int, content_type: []const u8, body: []const u8) void {
     var buf: [4096]u8 = undefined;
     const resp = std.fmt.bufPrint(&buf,
-        "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nContent-Type: {s}\r\n\r\n{s}",
+        "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nContent-Type: {s}\r\nAccess-Control-Allow-Origin: *\r\n\r\n{s}",
         .{ body.len, content_type, body },
     ) catch return;
     _ = c.write(fd, resp.ptr, resp.len);
 }
 
 fn sendHttpNoContent(fd: c_int) void {
-    _ = c.write(fd, "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n", 43);
+    _ = c.write(fd, "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nAccess-Control-Allow-Origin: *\r\n\r\n", 67);
+}
+
+/// Timestamp em milissegundos desde epoch (Unix). Usado no payload SSE.
+fn nowMillis() i64 {
+    var ts = Timespec{ .tv_sec = 0, .tv_nsec = 0 };
+    _ = c.clock_gettime(c.CLOCK_REALTIME, @ptrCast(&ts));
+    return @as(i64, ts.tv_sec) * 1000 + @divTrunc(@as(i64, ts.tv_nsec), std.time.ns_per_ms);
+}
+
+/// Escapa um buffer para JSON (control chars viram \uXXXX, aspas viram \").
+/// O payload vai dentro de uma string JSON, entao so esses 2 precisam ser
+/// escapados (alem dos controles). Buffer de saida deve ser >= buf.len*6.
+fn jsonEscape(in: []const u8, out: []u8) ![]u8 {
+    var n: usize = 0;
+    for (in) |ch| {
+        const needed: usize = if (ch < 0x20) 6 else 1;
+        if (n + needed > out.len) return error.BufferTooSmall;
+        switch (ch) {
+            '"' => { out[n] = '\\'; out[n + 1] = '"'; n += 2; },
+            '\\' => { out[n] = '\\'; out[n + 1] = '\\'; n += 2; },
+            '\n' => { out[n] = '\\'; out[n + 1] = 'n'; n += 2; },
+            '\r' => { out[n] = '\\'; out[n + 1] = 'r'; n += 2; },
+            '\t' => { out[n] = '\\'; out[n + 1] = 't'; n += 2; },
+            else => if (ch < 0x20) {
+                const hex = "0123456789abcdef";
+                out[n] = '\\';
+                out[n + 1] = 'u';
+                out[n + 2] = '0';
+                out[n + 3] = '0';
+                out[n + 4] = hex[(ch >> 4) & 0xf];
+                out[n + 5] = hex[ch & 0xf];
+                n += 6;
+            } else {
+                out[n] = ch;
+                n += 1;
+            },
+        }
+    }
+    return out[0..n];
 }
 
 fn handleSse(fd: c_int, state: *SharedState) void {
-    const header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+    const header = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\n";
     _ = c.write(fd, header.ptr, header.len);
 
     var prev: [CODE_MAX]u8 = undefined;
     var prev_len: usize = 0;
+    var esc_buf: [1536]u8 = undefined;
+    var msg_buf: [2048]u8 = undefined;
 
     while (true) {
         if (state.readNew(&prev, &prev_len)) |data| {
-            var msg_buf: [512]u8 = undefined;
-            const msg = std.fmt.bufPrint(&msg_buf, "data: {s}\n\n", .{data}) catch continue;
+            // Remove CR/LF final para o JSON ficar limpo.
+            var code_slice: []const u8 = data;
+            while (code_slice.len > 0 and (code_slice[code_slice.len - 1] == '\r' or code_slice[code_slice.len - 1] == '\n')) {
+                code_slice = code_slice[0 .. code_slice.len - 1];
+            }
+            const escaped = jsonEscape(code_slice, &esc_buf) catch continue;
+            const ts = nowMillis();
+            const msg = std.fmt.bufPrint(&msg_buf, "data: {{\"code\":\"{s}\",\"ts\":{d}}}\n\n", .{ escaped, ts }) catch continue;
             if (c.write(fd, msg.ptr, msg.len) < 0) break;
         }
         sleepNs(50 * std.time.ns_per_ms);
@@ -569,13 +633,32 @@ fn handleHttpConnection(fd: c_int, state: *SharedState) void {
 }
 
 fn runHttpMode(host: []const u8, port: u16, fake_scan_ms: ?u64) !void {
-    std.debug.print("[bridge] starting HTTP server on {s}:{d}...\n", .{ host, port });
-
     var state = SharedState{};
     try spawnSourceTasks(&state, fake_scan_ms);
 
-    const fd = try listenOn(host, port);
+    // Tenta bind na porta solicitada; se ocupada (EADDRINUSE), tenta a
+    // proxima ate HTTP_PORT_FALLBACK_END. A porta efetiva e logada e fica
+    // disponivel via --print-http-port.
+    var p: u16 = port;
+    var fd: c_int = -1;
+    while (p <= HTTP_PORT_FALLBACK_END) : (p += 1) {
+        fd = listenOn(host, p) catch |err| {
+            if (err == error.BindFailed) {
+                std.debug.print("[bridge] HTTP port {d} busy, trying {d}...\n", .{ p, p + 1 });
+                continue;
+            }
+            return err;
+        };
+        break;
+    }
+    if (fd < 0) {
+        std.debug.print("[bridge] no free HTTP port in range {d}..{d}\n", .{ port, HTTP_PORT_FALLBACK_END });
+        return error.BindFailed;
+    }
     defer _ = c.close(fd);
+
+    http_port_effective = p;
+    std.debug.print("[bridge] starting HTTP server on {s}:{d}...\n", .{ host, p });
 
     while (true) {
         const client = c.accept(fd, null, null);
@@ -601,10 +684,13 @@ pub fn main(init: std.process.Init) !u8 {
     defer init.arena.allocator().free(args);
 
     var serve_mode = false;
-    var serve_addr: []const u8 = "http://0.0.0.0:8080";
+    var serve_addr: []const u8 = "http://0.0.0.0:9001";
     var tcp_port: u16 = TCP_PORT;
+    var http_enabled = false;
+    var http_port: u16 = HTTP_PORT_DEFAULT;
     var fake_scan_ms: ?u64 = null;
     var print_device_only = false;
+    var print_http_port_only = false;
     const gpa = init.gpa;
     const io_inst = init.io;
 
@@ -651,6 +737,14 @@ pub fn main(init: std.process.Init) !u8 {
         return 0;
     }
 
+    // --print-http-port: imprime a porta HTTP efetiva (9001 ou fallback).
+    // Usado pela GUI para descobrir a porta do SSE sem hardcode.
+    // Precisa rodar com --http (ou -s) ja bindado; em geral a GUI consulta
+    // a porta padrao primeiro e so cai neste comando se 9001 falhar.
+    if (args.len >= 2 and std.mem.eql(u8, args[1], "--print-http-port")) {
+        print_http_port_only = true;
+    }
+
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -660,6 +754,10 @@ pub fn main(init: std.process.Init) !u8 {
         }
         if (std.mem.eql(u8, arg, "--print-device")) {
             print_device_only = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--print-http-port")) {
+            print_http_port_only = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--fake-scan")) {
@@ -685,6 +783,24 @@ pub fn main(init: std.process.Init) !u8 {
             i += 1;
             tcp_port = std.fmt.parseInt(u16, args[i], 10) catch {
                 std.debug.print("[bridge] invalid port '{s}'\n", .{args[i]});
+                usage();
+                return 1;
+            };
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--http")) {
+            http_enabled = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--http-port")) {
+            if (i + 1 >= args.len) {
+                std.debug.print("[bridge] --http-port requires a port number\n", .{});
+                usage();
+                return 1;
+            }
+            i += 1;
+            http_port = std.fmt.parseInt(u16, args[i], 10) catch {
+                std.debug.print("[bridge] invalid http port '{s}'\n", .{args[i]});
                 usage();
                 return 1;
             };
@@ -768,15 +884,47 @@ pub fn main(init: std.process.Init) !u8 {
             return 1;
         };
 
+        // --serve (HTTP-only) sobe so o HTTP; --print-http-port nao se aplica
+        // nesse modo (a porta so e conhecida depois de subir o servidor).
         runHttpMode(host, port, fake_scan_ms) catch {
             std.debug.print("[bridge] could not start HTTP server on '{s}'\n", .{host});
             return 1;
         };
+    } else if (http_enabled) {
+        // Modo hibrido: TCP (cliente xemonitor) + HTTP/SSE (GUI history) no
+        // mesmo processo. HTTP roda em thread separada.
+        std.debug.print("[bridge] hybrid mode: TCP 9000 + HTTP {d}\n", .{http_port});
+        const http_thread = std.Thread.spawn(.{}, runHttpInThread, .{ http_port, fake_scan_ms }) catch |err| {
+            std.debug.print("[bridge] failed to start HTTP thread: {}\n", .{err});
+            return 1;
+        };
+        http_thread.detach();
+        // Pequeno delay para o HTTP bindar antes da GUI conectar (evita
+        // race quando GUI faz auto_start e conecta SSE imediatamente).
+        sleepNs(100 * std.time.ns_per_ms);
+        if (print_http_port_only) {
+            std.debug.print("{d}\n", .{http_port_effective});
+            return 0;
+        }
+        try runTcpMode(tcp_port, fake_scan_ms);
     } else {
+        if (print_http_port_only) {
+            // Sem HTTP habilitado, reporta a porta padrao (nao subiu servidor).
+            std.debug.print("{d}\n", .{http_port_effective});
+            return 0;
+        }
         try runTcpMode(tcp_port, fake_scan_ms);
     }
 
     return 0;
+}
+
+/// Wrapper para spawn da thread HTTP (std.Thread.spawn exige fn com retorno
+/// void ou noreturn). Ignora erros de bindamento no log.
+fn runHttpInThread(port: u16, fake_scan_ms: ?u64) void {
+    runHttpMode("0.0.0.0", port, fake_scan_ms) catch |err| {
+        std.debug.print("[bridge] HTTP thread failed: {}\n", .{err});
+    };
 }
 
 // ---- Tests ----

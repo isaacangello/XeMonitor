@@ -359,6 +359,10 @@ pub fn build(b: *std.Build) void {
         if (pathExists(b, "/usr/lib/x86_64-linux-gnu")) {
             gui.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib/x86_64-linux-gnu" });
         }
+        // CachyOS/Arch sem /usr/lib/x86_64-linux-gnu: libdbus-1.so fica em /usr/lib.
+        if (pathExists(b, "/usr/lib/libdbus-1.so")) {
+            gui.root_module.addLibraryPath(.{ .cwd_relative = "/usr/lib" });
+        }
     }
     const gui_install = b.addInstallArtifact(gui, .{});
     const gui_step = b.step("gui", "Build the cross-platform GUI (DVUI + SDL3)");

@@ -52,10 +52,10 @@ README.md             → README em inglês (padrão do GitHub; link p/ portugu�
 README.pt-BR.md       → README em português (link p/ inglês)
 docs/windows-installer.md → instruções do instalador Windows (wizard next-next-finish)
 run_bridge.bat        → inicia bridge (via bridge_ctl) + xemonitor + Bloco de Notas
-stop_bridge.bat       → encerra bridge + xemonitor
-status_bridge.bat     → status do serviço bridge + xemonitor + pasta de config
-run_xemonitor.sh      → (Linux) bridge systemd + GUI com bandeja (auto_start)
-stop_xemonitor.sh     → (Linux) mata GUI + cliente + para o bridge
+stop_bridge.bat       :: encerra bridge + xemonitor
+status_bridge.bat     :: status do serviço bridge + xemonitor + pasta de config
+run_xemonitor.sh      → (Linux) entrypoint padrão: bridge systemd-user (sg uucp, sem sudo) + GUI com bandeja (auto_start)
+stop_xemonitor.sh     → (Linux) mata GUI + cliente + para o bridge (user unit por padrão)
 status_xemonitor.sh   → (Linux) status serviço/GUI/cliente/serial + pasta de config
 setup_usb.bat         → attach CH340 ao WSL via usbipd (auto-eleva)
 setup_wsl.sh          → setup udev + modulos usbip + wsl.conf (detecta Alpine/Arch)
@@ -119,7 +119,7 @@ zig build test
 zig build bridge
 zig build test-bridge       :: testes do bridge (Linux-only; roda no WSL)
 
-:: Rodar o app via TCP bridge
+:: Rodar o app via TCP bridge (Windows)
 run_bridge.bat              :: USB attach (se preciso) + bridge (Alpine/Arch) + xemonitor
 stop_bridge.bat             :: encerrar tudo
 status_bridge.bat           :: status
@@ -144,6 +144,14 @@ wsl -d Arch -u root systemctl status xemonitor-bridge
 systemctl --user start xemonitor-bridge
 systemctl --user status xemonitor-bridge
 journalctl --user -u xemonitor-bridge -f
+
+:: Linux host (CachyOS) — entrypoint padrão
+./run_xemonitor.sh              :: bridge systemd-user (sg uucp, sem sudo) + GUI com bandeja (auto_start)
+./run_xemonitor.sh --system     :: bridge systemd-system (root, exige sudo) + GUI
+./run_xemonitor.sh --user-bridge --fake-scan 400  :: modo dev (child process, fake scans)
+./stop_xemonitor.sh             :: para GUI + cliente + bridge (user unit)
+./stop_xemonitor.sh --system    :: para bridge system unit (root)
+./status_xemonitor.sh           :: status completo (system + user units, GUI, cliente, serial, grupos)
 
 :: Docker (tarefa agendada 'init Docker WSL' cuida no boot/logon)
 wsl -d Alpine -u root systemctl status docker
