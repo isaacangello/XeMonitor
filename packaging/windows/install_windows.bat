@@ -14,7 +14,7 @@
 ::  FASE 4   Servico (svc_enable -> porta 9000) + binarios Windows + tarefas + USB.
 ::
 :: Uso: install_windows.bat [/silent]
-::   /silent  — Inno Setup ([Run]): nao faz pause. Instalacao existente = auto-reparo.
+::   /silent  - Inno Setup ([Run]): nao faz pause. Instalacao existente = auto-reparo.
 :: ============================================================
 setlocal enabledelayedexpansion
 title XeMonitor - Instalador Windows
@@ -39,25 +39,31 @@ if not exist "%APP_DIR%\packaging\windows\install_windows.bat" (
 )
 set "INSTALL_DIR=%ProgramFiles%\XeMonitor"
 set "LOG_DIR=%APPDATA%\xemonitor\logs"
-:: LOGFILE e o log oficial (em %APPDATA%). Antes de escrever nele,
-:: precisamos garantir que a pasta %LOG_DIR% existe; mas tambem queremos
-:: poder apagar %APPDATA%\xemonitor na SANITIZACAO. Truque: escrever
-:: num arquivo temporario e copiar para LOGFILE no final.
-set "LOGFILE=%LOG_DIR%\install.log"
-set "TEMP_LOG=%TEMP%\xemonitor-install-%RANDOM%.log"
-set "LOCKFILE=%TEMP%\xemonitor-install.lock"
-call :log "=== XeMonitor installer %APP_VERSION% iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
-:: ------- PID do processo -------
+:: ------- PID do processo (definido ANTES da 1a escrita de log) -------
 set "INSTALL_PID="
 for /f "delims=" %%p in ('powershell -NoProfile -Command "[System.Diagnostics.Process]::GetCurrentProcess().Id"') do set "INSTALL_PID=%%p"
+if not defined INSTALL_PID set "INSTALL_PID=0"
+
+:: ------- Logs por processo (KNOWN_ISSUES #16) -------
+:: Dois instaladores concorrentes NAO podem intercalar linhas no mesmo
+:: arquivo (sintoma real: install.log com passadas misturadas). Por isso
+:: LOGFILE (espelho live) e TEMP_LOG (captura total) tem PID no nome.
+:: No final, o TEMP_LOG e copiado para o oficial %LOG_DIR%\install.log.
+:: A SANITIZACAO apaga %APPDATA%\xemonitor; :log_refresh re-semela o LOGFILE
+:: com o historico total depois disso.
+set "LOGFILE=%LOG_DIR%\install-%INSTALL_PID%.live.log"
+set "TEMP_LOG=%TEMP%\xemonitor-install-%INSTALL_PID%.log"
+:: LOCKFILE tem nome FIXO (compartilhado entre runs): e ele que permite a
+:: um novo instalador detectar e matar um run anterior concorrente.
+set "LOCKFILE=%TEMP%\xemonitor-install.lock"
 
 :: ------- Log helper -------
 call :log "=== XeMonitor installer %APP_VERSION% iniciado (silent=%SILENT%, pid=%INSTALL_PID%) ==="
 
 :: ------- Auto-elevacao para Admin -------
 :: NOTA: `net session` pode falhar mesmo para admins (servico SMB/LanmanServer parado).
-:: Usa `fltmc` (Filter Manager) como check alternativo — requer admin.
+:: Usa `fltmc` (Filter Manager) como check alternativo - requer admin.
 set "IS_ADMIN=1"
 fltmc >nul 2>&1 || set "IS_ADMIN=0"
 if "%IS_ADMIN%"=="0" (
@@ -91,7 +97,7 @@ if exist "%LOCKFILE%" (
         tasklist /FI "PID eq !OLD_PID!" 2>nul | findstr /I "!OLD_PID!" >nul 2>&1
         if !errorlevel! equ 0 (
             call :log "Lockfile presente e processo !OLD_PID! ativo. Matando..."
-            taskkill /PID !OLD_PID! /F >nul 2>&1
+            taskkill /PID !OLD_PID! /T /F >nul 2>&1
             timeout /t 2 /nobreak >nul 2>&1
         ) else (
             call :log "Lockfile presente mas processo !OLD_PID! morto. Limpando."
@@ -106,20 +112,15 @@ echo  XeMonitor %APP_VERSION% - Instalador Windows
 echo ==========================================
 echo.
 call :log "TRACE: Admin OK. IS_ADMIN=%IS_ADMIN%, SILENT=%SILENT%"
-ECHO DEBUG-BEFORE-82
 
-echo TRACE-82-BEFORE
-call :log "TRACE: pos-header, entrando Fase 0"
-echo TRACE-82-AFTER
 :: ============================================================
 :: 0. Modo: instalacao existente -> Reparo / Cancelar
 :: ============================================================
-echo TRACE-PHASE0-ENTRY
+call :log "STEP 0: detectar instalacao existente (modo install/repair) -> INICIO"
 set "MODE=install"
 set "EXISTING=0"
 if exist "%INSTALL_DIR%\xemonitor-gui.exe" set "EXISTING=1"
 if exist "%APPDATA%\xemonitor\xemonitor-gui.conf" set "EXISTING=1"
-echo TRACE-EXISTING=%EXISTING%
 if %EXISTING% equ 1 (
     if /i "%SILENT%"=="/silent" (
         call :log "Instalacao existente; modo /silent = auto-reparo."
@@ -151,9 +152,7 @@ if /i "%MODE%"=="repair" (
     call :log "Processos antigos encerrados."
     echo       Instancias antigas encerradas.
 )
-echo TRACE-121-BEFORE
 call :log "TRACE: Fase 0 concluida. MODE=%MODE%, EXISTING=%EXISTING%"
-echo TRACE-121-AFTER
 
 :: ============================================================
 :: 0.5  SANITIZACAO PRE-INSTALACAO (estado limpo)
@@ -165,8 +164,8 @@ echo TRACE-121-AFTER
 ::   - %APPDATA%\xemonitor (conf -> dispara EXISTING=1; logs; pids) -> fresh total
 ::   - tarefas agendadas XeMonitor-*
 :: Cada passo e logado e VALIDADO; falha de remocao vira _FATAL (nao trava mudo).
-echo TRACE-SANITIZE-ENTRY
-call :log "=== SANITIZACAO PRE-INSTALACAO iniciada ==="
+call :log "STEP 0: detectar instalacao existente -> OK (MODE=%MODE%, EXISTING=%EXISTING%)"
+call :log "STEP 1: sanitizacao pre-instalacao (processos/WSL/config/tarefas) -> INICIO"
 set "SAN_ERR=0"
 
 :: [1] Matar processos
@@ -210,6 +209,7 @@ if exist "%APPDATA%\xemonitor" (
 :: Recriar pasta de logs (a pasta de config foi apagada; manter log de instalacao)
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 call :log "Sanitize: pasta de logs recriada."
+call :log_refresh
 
 :: [4] Remover tarefas agendadas (idempotente)
 schtasks /Delete /F /TN "XeMonitor-USB-Attach" >nul 2>&1
@@ -219,19 +219,18 @@ schtasks /Delete /F /TN "XeMonitor-Bridge-Watchdog" >nul 2>&1
 call :log "Sanitize: tarefas XeMonitor-* removidas (se havia)."
 
 if "!_SAN_FATAL!"=="1" (
-    call :log "=== SANITIZACAO FALHOU (residuo nao removido) ==="
+    call :log "STEP 1: sanitizacao -> ERRO (residuo nao removido)"
     set "_DIE_RC=1"
     set "_FATAL=1"
     goto :die
 )
-call :log "=== SANITIZACAO concluida: estado limpo ==="
+call :log "STEP 1: sanitizacao -> OK (estado limpo, MODE agora install)"
 :: Apos limpar config/distro, o modo vira instalacao fresh
 set "EXISTING=0"
 set "MODE=install"
 call :log "TRACE: pos-sanitizacao MODE=%MODE%, EXISTING=%EXISTING%"
-echo TRACE-SANITIZE-DONE
 
-echo TRACE-PHASE1-ENTRY
+call :log "STEP 2: FASE 1 - dependencias Windows + import miniroot Alpine -> INICIO"
 :: ============================================================
 :: FASE 1/4: Dependencias Windows + Alpine
 :: ============================================================
@@ -242,6 +241,7 @@ echo ==========================================
 echo.
 
 :: [1] WSL2
+call :log "STEP 2.1: verificar WSL2 -> INICIO"
 echo [1/6] Verificando WSL2...
 call :runwsl status 30 status
 if !WSL_RC! equ 0 (
@@ -270,9 +270,11 @@ if !WSL_RC! equ 0 (
 )
 if "!_FATAL!"=="1" goto :die
 echo       OK.
+call :log "STEP 2.1: verificar WSL2 -> OK"
 echo.
 
 :: [2] winget
+call :log "STEP 2.2: verificar winget -> INICIO"
 echo [2/6] Verificando winget...
 set "HAS_WINGET=0"
 where winget >nul 2>&1
@@ -283,7 +285,7 @@ if %errorlevel% equ 0 (
 ) else (
     call :log "winget nao encontrado via PATH."
     echo       [AVISO] winget nao encontrado. Tentando instalar App Installer...
-    :: Tentar instalar App Installer (winget) via PowerShell
+    rem Tentar instalar App Installer (winget) via PowerShell
     powershell -NoProfile -Command "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe" >nul 2>&1
     timeout /t 3 /nobreak >nul 2>&1
     where winget >nul 2>&1
@@ -296,9 +298,15 @@ if %errorlevel% equ 0 (
         echo       [AVISO] winget nao instalado. wget/usbipd usarao fallbacks.
     )
 )
+if defined HAS_WINGET (
+    call :log "STEP 2.2: verificar winget -> OK (HAS_WINGET=1)"
+) else (
+    call :log "STEP 2.2: verificar winget -> AVISO (indisponivel)"
+)
 echo.
 
 :: [3] wget
+call :log "STEP 2.3: verificar wget -> INICIO (WGET alvo)"
 echo [3/6] Verificando wget...
 set "WGET="
 where wget >nul 2>&1
@@ -334,7 +342,7 @@ if %errorlevel% equ 0 (
         )
     )
     if not defined WGET (
-        :: Tentar instalar via Chocolatey se disponivel
+        rem Tentar instalar via Chocolatey se disponivel
         where choco >nul 2>&1
         if %errorlevel% equ 0 (
             echo       Instalando wget via Chocolatey...
@@ -347,7 +355,7 @@ if %errorlevel% equ 0 (
         )
     )
     if not defined WGET (
-        :: Tentar instalar via Scoop se disponivel
+        rem Tentar instalar via Scoop se disponivel
         where scoop >nul 2>&1
         if %errorlevel% equ 0 (
             echo       Instalando wget via Scoop...
@@ -364,9 +372,15 @@ if %errorlevel% equ 0 (
         echo       wget indisponivel. Download usara PowerShell sem progresso.
     )
 )
+if defined WGET (
+    call :log "STEP 2.3: verificar wget -> OK (WGET=%WGET%)"
+) else (
+    call :log "STEP 2.3: verificar wget -> AVISO (fallback Invoke-WebRequest)"
+)
 echo.
 
 :: [4] usbipd-win
+call :log "STEP 2.4: verificar usbipd-win -> INICIO"
 echo [4/6] Verificando usbipd-win...
 set "USBIPD=usbipd"
 where usbipd >nul 2>&1
@@ -395,11 +409,13 @@ if %errorlevel% neq 0 (
     call :log "usbipd presente via PATH."
     echo       usbipd presente.
 )
+call :log "STEP 2.4: verificar usbipd-win -> OK (USBIPD=%USBIPD%)"
 echo.
 
 :: [5] Obter miniroot Alpine pre-fabricado (bridge versionado embarcado)
 :: O miniroot vem embutido em %APP_DIR%\packaging\windows\miniroots\ (o Inno
 :: empacota o tarball mais recente). Nome: alpine-bridge-<ver>.<build>-x86_64.tar.gz
+call :log "STEP 2.5: obter miniroot Alpine -> INICIO"
 echo [5/6] Obtendo miniroot Alpine (bridge pre-baked)...
 set "MINIROOT_DIR=%APP_DIR%\packaging\windows\miniroots"
 set "TARBALL="
@@ -427,11 +443,13 @@ if !errorlevel! neq 0 (
 :skip_miniroot_select
 call :log "Tarball miniroot: !TARBALL!"
 if "!_FATAL!"=="1" goto :die
+call :log "STEP 2.5: obter miniroot Alpine -> OK (!LATEST_MINIROOT!)"
 echo.
 if "!_FATAL!"=="1" goto :die
 echo.
 
 :: [6] Import Alpine (imagem miniroot pre-fabricada e versionada pelo bridge)
+call :log "STEP 2.6: importar miniroot Alpine -> INICIO"
 echo [6/6] Importando Alpine miniroot (bridge pre-baked)...
 set "DISTRO=Alpine"
 set "XEMONITOR_TARBALL=%TARBALL%"
@@ -455,55 +473,79 @@ call :runwsl set_default 60 set_default
 call :log "Distro WSL: %DISTRO%"
 echo       Alpine pronto (miniroot).
 echo.
+call :log "STEP 2.6: importar miniroot Alpine -> OK (%DISTRO% registrada e ativa)"
 call :log "=== FASE 1 concluida ==="
 
 :: ============================================================
 :: [7] Configurar device persistente no Alpine
 :: ============================================================
+call :log "STEP 3: configurar device persistente no Alpine -> INICIO"
 echo [7/7] Configurando device persistente no Alpine...
 set "DETECTED_DEVICE="
 
 :: 1. Detectar device no Windows (via WMI)
-for /f "tokens=2 delims==" %%I in ('wmic path Win32_PnPEntity where "DeviceID like '%%VID_1A86%%'" get DeviceID /value 2^>nul') do (
-    set "DETECTED_DEVICE=%%I"
-)
-
-:: Fallback: setup_usb.bat
-if not defined DETECTED_DEVICE if exist "%APP_DIR%\setup_usb.bat" (
-    for /f "tokens=*" %%I in ('cmd /c "%APP_DIR%\setup_usb.bat" --detect-device 2^>nul') do (
-        set "DETECTED_DEVICE=%%I"
+:: wmic.exe foi descontinuado e pode travar em contexto elevado; usamos
+:: Get-CimInstance nativo (WMI) com timeout proprio (30s) via Start-Job.
+:: O comando PS e gerado num .ps1 temporario para evitar inferno de aspas.
+set "WMIC_PS=%TEMP%\xemonitor-wmic.ps1"
+set "WMIC_OUT=%TEMP%\xemonitor-wmic.txt"
+del "%WMIC_PS%" >nul 2>&1
+del "%WMIC_OUT%" >nul 2>&1
+echo $j = Start-Job { Get-CimInstance Win32_PnPEntity -Filter "DeviceID LIKE '%%VID_1A86%%'" -ErrorAction SilentlyContinue ^| ForEach-Object { 'DeviceID=' + $_.DeviceID } }; if (Wait-Job $j -Timeout 30) { $o = Receive-Job $j } else { Stop-Job $j; $o = $null }; Remove-Job $j -Force -ErrorAction SilentlyContinue; Set-Content -LiteralPath '%WMIC_OUT%' -Value $o -Encoding ascii >"%WMIC_PS%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%WMIC_PS%" >nul 2>&1
+if exist "%WMIC_OUT%" (
+    for /f "usebackq tokens=1* delims==" %%A in ("%WMIC_OUT%") do (
+        if /i "%%A"=="DeviceID" set "DETECTED_DEVICE=%%B"
     )
+    call :log "STEP 3: WMI (Get-CimInstance) -> DETECTED_DEVICE=[%DETECTED_DEVICE%]"
+) else (
+    call :log "STEP 3: WMI (Get-CimInstance) sem saida - caindo no fallback setup_usb"
+)
+del "%WMIC_PS%" >nul 2>&1
+del "%WMIC_OUT%" >nul 2>&1
+
+:: Fallback: detectar CH340 via usbipd list (nao usar setup_usb.bat, que nao tem
+:: modo --detect-device e roda o fluxo completo de bind/attach -> penduraria o
+:: install num pause esperando Enter; KNOWN_ISSUES #16).
+if not defined DETECTED_DEVICE (
+    "%USBIPD%" list 2>nul | findstr /i "1a86:7523" >nul 2>&1
+    if !errorlevel! equ 0 set "DETECTED_DEVICE=USB-SERIAL-CH340"
+    call :log "STEP 3: fallback usbipd list -> DETECTED_DEVICE=[!DETECTED_DEVICE!]"
 )
 
 if defined DETECTED_DEVICE (
-    :: Resolver o device REAL dentro do Alpine (by-id se existir, senao /dev/ttyUSB0)
-    :: Nota: no WSL o daemon udev nao roda, entao /dev/serial/by-id/ geralmente
-    :: nao existe — nesse caso o default correto e /dev/ttyUSB0 (criado pelo kernel).
+    rem Resolver o device REAL dentro do Alpine (by-id se existir, senao /dev/ttyUSB0)
+    rem Nota: no WSL o daemon udev nao roda, entao /dev/serial/by-id/ geralmente
+    rem nao existe - nesse caso o default correto e /dev/ttyUSB0 (criado pelo kernel).
     set "ALPINE_DEVICE="
     for /f "tokens=*" %%I in ('wsl -d Alpine -u root -- sh -c "ls /dev/serial/by-id/ 2>/dev/null | grep -i 1a86 | head -1" 2^>nul') do (
         set "ALPINE_DEVICE=/dev/serial/by-id/%%I"
     )
     if not defined ALPINE_DEVICE (
-        :: Sem symlink by-id (udev nao roda no WSL) -> fallback /dev/ttyUSB0
+        rem Sem symlink by-id (udev nao roda no WSL) -> fallback /dev/ttyUSB0
         for /f "tokens=*" %%I in ('wsl -d Alpine -u root -- sh -c "ls /dev/ttyUSB* 2>/dev/null | head -1" 2^>nul') do (
             set "ALPINE_DEVICE=%%I"
         )
     )
     if not defined ALPINE_DEVICE set "ALPINE_DEVICE=/dev/ttyUSB0"
+    rem Nota: dentro do bloco paren, usamos !var! (delayed) para o valor resolvido
+    rem acima nao ser congelado no parse do bloco (KNOWN_ISSUES #16).
+    call :log "STEP 3: device resolvido no Alpine=[!ALPINE_DEVICE!]"
     
-    :: Gravar no Alpine
-    wsl -d Alpine -u root -- sh -c "mkdir -p /etc/xemonitor && echo DEVICE=%ALPINE_DEVICE% > /etc/xemonitor/device"
+    rem Gravar no Alpine
+    wsl -d Alpine -u root -- sh -c "mkdir -p /etc/xemonitor && echo DEVICE=!ALPINE_DEVICE! > /etc/xemonitor/device"
     if !errorlevel! equ 0 (
-        call :log "Device persistente configurado: %ALPINE_DEVICE%"
+        call :log "Device persistente configurado: !ALPINE_DEVICE!"
     ) else (
         call :log "AVISO: falha ao gravar /etc/xemonitor/device no Alpine"
     )
     
-    :: Criar /etc/conf.d/xemonitor-bridge para OpenRC
-    wsl -d Alpine -u root -- sh -c "echo device=%ALPINE_DEVICE% > /etc/conf.d/xemonitor-bridge"
+    rem Criar /etc/conf.d/xemonitor-bridge para OpenRC
+    wsl -d Alpine -u root -- sh -c "echo device=!ALPINE_DEVICE! > /etc/conf.d/xemonitor-bridge"
 ) else (
     call :log "AVISO: device nao detectado no Windows, bridge fara auto-detect"
 )
+call :log "STEP 3: configurar device persistente -> OK (DETECTED_DEVICE=[%DETECTED_DEVICE%], ALPINE_DEVICE=[%ALPINE_DEVICE%])"
 
 :: ============================================================
 :: (FASE 2 removida) Dependencias Alpine (openrc, kmod, eudev)
@@ -512,7 +554,6 @@ if defined DETECTED_DEVICE (
 :: menos sujeita a falhas de rede.
 :: ============================================================
 
-echo TRACE-PHASE3-ENTRY
 :: ============================================================
 :: FASE 3/4: REMOVIDA
 :: O miniroot ja vem com a versao EXATA do bridge (pre-baked e validada
@@ -527,17 +568,30 @@ echo  FASE 3/4: (suprimida)
 echo ==========================================
 echo       bridge ja esta pre-baked no miniroot importado.
 echo.
-call :log "=== FASE 3 concluida (no-op) ==="
+call :log "STEP 4.0: FASE 3 (no-op) -> OK (bridge pre-baked no miniroot)"
 
 :: ============================================================
 :: FASE 4/4: Configuracao Final
 :: ============================================================
+call :log "STEP 4: FASE 4 - configuracao final (bridge/binarios/config/tarefas/USB) -> INICIO"
 echo ==========================================
 echo  FASE 4/4: Configuracao Final
 echo ==========================================
 echo.
 
+:: [0] Validar estado critico (KNOWN_ISSUES #16)
+:: Se a distro nao estiver definida/registrada, operar no WSL cego produziria
+:: erros dificeis de diagnosticar. Validar antes de qualquer comando WSL.
+if not defined DISTRO (
+    call :log "ERRO: DISTRO indefinido apos o import - abortando."
+    echo [ERRO] Distro WSL indefinida apos o import.
+    set "_DIE_RC=1"
+    set "_FATAL=1"
+)
+if "!_FATAL!"=="1" goto :die
+
 :: [1] Bridge service
+call :log "STEP 4.1: iniciar bridge no WSL (svc_enable 120s) -> INICIO"
 echo [1/6] Iniciando bridge no WSL...
 call :runwsl svc_enable 120 svc_enable
 if !WSL_RC! neq 0 (
@@ -559,10 +613,12 @@ if !WSL_RC! neq 0 (
 )
 if "!_FATAL!"=="1" goto :die
 call :log "Bridge habilitado/iniciado no %DISTRO% e ouvindo na 9000."
+call :log "STEP 4.1: iniciar bridge no WSL -> OK (porta 9000 ouvindo)"
 echo       Bridge iniciado e porta 9000 ouvindo.
 echo.
 
 :: [2] Binarios Windows
+call :log "STEP 4.2: instalar binarios em %INSTALL_DIR% -> INICIO"
 echo [2/6] Instalando binarios em %INSTALL_DIR%...
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 if exist "%APP_DIR%\xemonitor-gui.exe" (
@@ -573,9 +629,11 @@ if exist "%APP_DIR%\xemonitor.exe" (
     copy /y "%APP_DIR%\xemonitor.exe" "%INSTALL_DIR%\xemonitor.exe" >nul
     echo       xemonitor.exe instalado.
 )
+call :log "STEP 4.2: instalar binarios -> OK"
 echo.
 
 :: [2b] Config GUI
+call :log "STEP 4.2b: gravar config do GUI -> INICIO"
 echo [2b] Gravando config do GUI...
 set "CFG_DIR=%APPDATA%\xemonitor"
 set "CFG_FILE=%CFG_DIR%\xemonitor-gui.conf"
@@ -590,6 +648,7 @@ call :ensure_gui_cfg "%CFG_DIR%"
 echo.
 
 :: [3] Tarefas agendadas
+call :log "STEP 4.3: criar tarefas agendadas (USB-Attach/Bridge/App) -> INICIO"
 echo [3/6] Criando tarefas agendadas...
 if exist "%APP_DIR%\scripts\install_autostart.bat" (
     call "%APP_DIR%\scripts\install_autostart.bat" /silent
@@ -621,8 +680,10 @@ if exist "%APP_DIR%\scripts\install_autostart.bat" (
     if "!_FATAL!"=="1" (
         echo [ERRO] Falha ao criar uma ou mais tarefas agendadas.
         set "_DIE_RC=1"
+        call :log "STEP 4.3: criar tarefas -> ERRO (uma ou mais falharam)"
     ) else (
         call :log "Tarefas criadas via schtasks."
+        call :log "STEP 4.3: criar tarefas -> OK"
         echo       Tarefas criadas: USB-Attach, Bridge, App.
     )
 )
@@ -630,16 +691,20 @@ if "!_FATAL!"=="1" goto :die
 echo.
 
 :: [4] USB attach
+call :log "STEP 4.4: configurar USB CH340 -> INICIO"
 echo [4/6] Configurando USB CH340...
 if exist "%APP_DIR%\setup_usb.bat" (
     call "%APP_DIR%\setup_usb.bat" /silent
+    call :log "STEP 4.4: configurar USB CH340 -> concluido (rc=!errorlevel!)"
 ) else (
     call :log "AVISO: setup_usb.bat nao encontrado."
     echo [AVISO] setup_usb.bat nao encontrado.
+    call :log "STEP 4.4: configurar USB CH340 -> AVISO (script ausente)"
 )
 echo.
 
 :: [5] Verifica scanner
+call :log "STEP 4.5: verificar scanner USB-Serial -> INICIO"
 echo [5/6] Verificando scanner USB-Serial...
 set "SCANNER_STATUS=nao verificado"
 ping -n 4 127.0.0.1 >nul
@@ -647,11 +712,13 @@ call :runwsl tty_check 30 tty_check
 if !WSL_RC! equ 0 (
     set "SCANNER_STATUS=detectado - /dev/ttyUSB0"
     call :log "Scanner detectado: /dev/ttyUSB0."
+    call :log "STEP 4.5: verificar scanner -> OK (detectado)"
     echo.
     echo       [OK] Scanner USB-Serial detectado - /dev/ttyUSB0.
 ) else (
     set "SCANNER_STATUS=NAO detectado"
     call :log "Scanner NAO detectado. Conecte o CH340 e rode setup_usb.bat."
+    call :log "STEP 4.5: verificar scanner -> NAO detectado"
     echo.
     echo  ============================================================
     echo  [IMPORTANTE] Scanner USB-Serial NAO detectado.
@@ -683,25 +750,19 @@ echo  Para encerrar:   stop_bridge.bat
 echo  Para remover:    scripts\uninstall_autostart.bat + apagar %INSTALL_DIR%
 echo ==========================================
 del "%LOCKFILE%" >nul 2>&1
+call :log "STEP 4: FASE 4 -> OK (modo=%MODE%, scanner=%SCANNER_STATUS%)"
 call :log "Instalador concluido (pid=%INSTALL_PID%, modo=%MODE%)."
-:: Move o log temporario para o log oficial (so agora, apos a sanitizacao).
-if exist "%TEMP_LOG%" (
-    if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" 2>nul
-    move /Y "%TEMP_LOG%" "%LOGFILE%" >nul 2>&1
-)
+call :finalize_log
 call :pause_helper
 exit /b 0
 
 :: ============================================================
-:: :die — cleanup + exit (goto-safe, never inside ( ... ) block)
+:: :die - cleanup + exit (goto-safe, never inside ( ... ) block)
 :: ============================================================
 :die
 del "%LOCKFILE%" >nul 2>&1
-:: Move o log temporario para o oficial (mesmo em caso de erro).
-if exist "%TEMP_LOG%" (
-    if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" 2>nul
-    move /Y "%TEMP_LOG%" "%LOGFILE%" >nul 2>&1
-)
+call :log "Instalador ABORTADO/ERRO (pid=%INSTALL_PID%, rc=%_DIE_RC%)."
+call :finalize_log
 call :pause_helper
 if not defined _DIE_RC set "_DIE_RC=1"
 exit /b %_DIE_RC%
@@ -727,6 +788,8 @@ if "%_rwl_skip%"=="1" exit /b 0
 call :log "wsl %1 (%2s) ..."
 powershell -NoProfile -ExecutionPolicy Bypass -File "%APP_DIR%\scripts\wsl_timeout.ps1" -Timeout %2 -Task %3
 set "WSL_RC=!errorlevel!"
+if exist "%LOG_DIR%\wsl.out.txt" call :log_dump %1 stdout "%LOG_DIR%\wsl.out.txt"
+if exist "%LOG_DIR%\wsl.err.txt" call :log_dump %1 stderr "%LOG_DIR%\wsl.err.txt"
 if !WSL_RC! equ 0 (
     call :log "wsl %1: OK"
 ) else if !WSL_RC! equ 200 (
@@ -741,14 +804,72 @@ set "XEMONITOR_DEST="
 exit /b 0
 
 :: ============================================================
+:: :log_dump <task> <stream> <arquivo>
+:: Espelha um arquivo de stdout/stderr do wsl no log, linha a linha, sem
+:: quebrar o parse do cmd com metacaracteres (& " | < > ^ % !) no conteudo.
+:: Padrao AAA: desliga delayed expansion na captura (set "line=%%L" literal)
+:: e religa no echo - o texto vira uma variavel, nao passa por call/parse.
+:: ============================================================
+:log_dump
+set "_ld_task=%~1"
+set "_ld_stream=%~2"
+set "_ld_file=%~3"
+if not exist "%_ld_file%" exit /b 0
+echo %date% %time%  wsl %_ld_task%: --%_ld_stream%-->>"%TEMP_LOG%"
+if exist "%LOG_DIR%" echo %date% %time%  wsl %_ld_task%: --%_ld_stream%-->>"%LOGFILE%" 2>nul
+setlocal DisableDelayedExpansion
+for /f "usebackq delims=" %%L in ("%_ld_file%") do (
+    set "line=%%L"
+    setlocal EnableDelayedExpansion
+    echo %date% %time%  wsl %_ld_task%:    !line!>>"%TEMP_LOG%"
+    if exist "%LOG_DIR%" echo %date% %time%  wsl %_ld_task%:    !line!>>"%LOGFILE%" 2>nul
+    endlocal
+)
+endlocal
+echo %date% %time%  wsl %_ld_task%: --fim %_ld_stream%-->>"%TEMP_LOG%"
+if exist "%LOG_DIR%" echo %date% %time%  wsl %_ld_task%: --fim %_ld_stream%-->>"%LOGFILE%" 2>nul
+exit /b 0
+
+:: ============================================================
 :: :log - append de mensagem no LOGFILE
-:: Escreve em %TEMP_LOG% (arquivo temporario) e so no final o conteudo
-:: e movido para %LOGFILE%. Isso permite que a SANITIZACAO apague
-:: %APPDATA%\xemonitor sem conflito com o bat tendo o log aberto.
+:: Escreve no %TEMP_LOG% (captura total) E espelha em tempo real no
+:: %LOGFILE% por-processo. So o run dono do log escreve nele -> sem
+:: interleave entre instaladores concorrentes (KNOWN_ISSUES #16).
+:: Obs.: a SANITIZACAO apaga %APPDATA%\xemonitor no fluxo; apos recriar
+:: a pasta, o :log_refresh (logo abaixo) re-semeara o LOGFILE com todo o
+:: historico do TEMP_LOG para a captura nao ter buraco.
 :: ============================================================
 :log
 if not defined TEMP_LOG exit /b 0
 echo %date% %time%  %*>>"%TEMP_LOG%"
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
+if exist "%LOG_DIR%" echo %date% %time%  %*>>"%LOGFILE%" 2>nul
+exit /b 0
+
+:: ============================================================
+:: :log_refresh - re-semear o %LOGFILE% com todo o historico do TEMP_LOG.
+:: Usado logo apos a sanitizacao recriar a pasta de logs.
+:: ============================================================
+:log_refresh
+if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
+if exist "%TEMP_LOG%" (
+    copy /Y "%TEMP_LOG%" "%LOGFILE%" >nul 2>&1
+)
+call :log "log: espelho do LOGFILE restaurado a partir do historico total."
+exit /b 0
+
+:: ============================================================
+:: :finalize_log - fecha o log do run: consolida o TEMP_LOG no LOGFILE
+:: por-processo e copia para o oficial %LOG_DIR%\install.log (proximo
+:: a comportamentos antigos de nome fixo, mas linear).
+:: ============================================================
+:finalize_log
+if not defined TEMP_LOG exit /b 0
+if exist "%TEMP_LOG%" (
+    if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" 2>nul
+    copy /Y "%TEMP_LOG%" "%LOGFILE%" >nul 2>&1
+    copy /Y "%TEMP_LOG%" "%LOG_DIR%\install.log" >nul 2>&1
+)
 exit /b 0
 
 :: ============================================================

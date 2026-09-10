@@ -104,13 +104,12 @@ docker exec "$CONTAINER" sh -c '
 '
 
 # Exporta o filesystem do container como tarball rootfs.
-# docker export = rootfs tarball (para WSL --import-into).
-echo "[miniroot-ci] commitando e exportando $TARBALL_PATH..."
+# docker export = rootfs tarball (para WSL --import). Obs: commit+save
+# gerava imagem OCI (WSL_E_NOT_A_LINUX_DISTRO no install) — ver
+# KNOWN_ISSUES #36.
+echo "[miniroot-ci] exportando $TARBALL_PATH..."
 mkdir -p "$OUT_DIR"
-IMG="xem-miniroot:${BRIDGE_VERSION}"
-docker commit "$CONTAINER" "$IMG" >/dev/null
-docker save "$IMG" | gzip > "$TARBALL_PATH"
-docker rmi "$IMG" >/dev/null 2>&1 || true
+docker export "$CONTAINER" | gzip > "$TARBALL_PATH"
 docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
 
 if [ ! -f "$TARBALL_PATH" ]; then
