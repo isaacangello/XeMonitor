@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# run_xemonitor — terminal de controle do XeMonitor (Linux)
+#
+# Recebe subcomandos start|stop|status e despacha para os scripts canonicos
+# (run_xemonitor.sh / stop_xemonitor.sh / status_xemonitor.sh) localizados no
+# mesmo diretorio. Funciona tanto do repositorio quanto de /usr/local/bin
+# (entrada padrao pos-instalacao via install.sh).
+#
+# Uso:
+#   run_xemonitor start   [flags do run_xemonitor.sh]
+#   run_xemonitor stop    [--system]
+#   run_xemonitor status
+#   run_xemonitor --help
+
+set -euo pipefail
+
+self="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+dir="$(dirname "$self")"
+
+usage() {
+    cat <<EOF
+Uso: $(basename "$0") <start|stop|status> [args...]
+
+Subcomandos:
+  start  [--system] [--user-bridge] [--fake-scan MS] [--no-enable]
+         Sobe o bridge + GUI (default: unit de usuario, sem sudo).
+  stop   [--system]
+         Encerra GUI + cliente + bridge.
+  status
+         Status de servicos/bridge, GUI, cliente, serial e grupos.
+
+Opcoes:
+  --help, -h     Mostra esta ajuda.
+EOF
+}
+
+cmd="${1:-}"
+if [ -n "$cmd" ]; then shift; fi
+
+case "$cmd" in
+    start)  [ -x "$dir/run_xemonitor.sh" ] || { echo "[erro] run_xemonitor.sh nao encontrado junto a $(basename "$0")." >&2; exit 1; }
+            exec "$dir/run_xemonitor.sh" "$@" ;;
+    stop)   [ -x "$dir/stop_xemonitor.sh" ] || { echo "[erro] stop_xemonitor.sh nao encontrado junto a $(basename "$0")." >&2; exit 1; }
+            exec "$dir/stop_xemonitor.sh" "$@" ;;
+    status) [ -x "$dir/status_xemonitor.sh" ] || { echo "[erro] status_xemonitor.sh nao encontrado junto a $(basename "$0")." >&2; exit 1; }
+            exec "$dir/status_xemonitor.sh" "$@" ;;
+    --help|-h|help)
+            usage; exit 0 ;;
+    "")
+            usage >&2; exit 1 ;;
+    *)
+            echo "[erro] subcomando desconhecido: $cmd" >&2
+            usage >&2; exit 1 ;;
+esac

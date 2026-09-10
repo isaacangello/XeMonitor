@@ -62,22 +62,30 @@ The bridge can run locally and `xemonitor` injects via a **native `/dev/uinput` 
 
 ### Linux
 
-Official installer (downloads the binary from the latest GitHub Release and configures everything — CH340 udev rule, `uucp/dialout/input` groups, the `uinput` module/udev rule, GUI runtime deps via apt on Debian/Ubuntu, and the bridge service on systemd or OpenRC):
+Official installer (downloads the binary from the latest GitHub Release and configures everything — CH340 udev rule, `uucp/dialout/input` groups, the `uinput` module/udev rule, GUI runtime deps via apt on Debian/Ubuntu, and the bridge auto-start/service):
 
 ```bash
 curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
 ```
 
-- Installs `xemonitor`, `xemonitor-bridge` and `xemonitor-gui` into `/usr/local/bin`.
+- Installs `xemonitor`, `xemonitor-bridge`, `xemonitor-gui` and the **control console
+  `run_xemonitor`** (`start|stop|status`) into `/usr/local/bin`.
 - Creates the `99-ch340.rules` udev rule (`MODE="0666"`) and the `99-xemonitor-uinput.rules`
   rule (`GROUP="input"`, `MODE="0660"`), plus `/etc/modules-load.d/xemonitor-uinput.conf`
   so the native `/dev/uinput` injector works out of the box.
 - Adds the user to the `uucp`, `dialout` and `input` groups.
-- Installs and starts the `xemonitor-bridge` service (systemd or OpenRC) — starts with the system.
+- **Default (v1.5.0+) — bridge as a systemd USER unit** (`~/.config/systemd/user/xemonitor-bridge.service`,
+  run via `sg`, **no sudo at runtime**): the bridge starts at login (user `default.target`),
+  and the GUI (XDG autostart, `server_mode=systemd-user`, `auto_start=true`) starts with it.
+  For manual control: `run_xemonitor start|stop|status`.
+  Pass **`--system`** to install a **system service** instead (root, survives logout /
+  headless boot); OpenRC (Alpine WSL) and headless systemd sessions keep the system
+  service automatically.
 - Installs the app `.desktop` entry, the XDG **autostart** entry (GUI starts at login)
   and a default `~/.config/xemonitor/xemonitor-gui.conf` (`auto_start=true`).
 - Also installs an optional systemd user unit (`/etc/systemd/user/xemonitor-gui.service`)
-  for those who prefer it over autostart: `systemctl --user enable xemonitor-gui.service`.
+  for those who prefer starting the GUI itself via systemd instead of autostart:
+  `systemctl --user enable xemonitor-gui.service`.
 - Requires `sudo` (or running as root).
 
 **Supported distros**: the release GUI (`xemonitor-gui`) is built on Ubuntu 22.04
@@ -114,14 +122,40 @@ scheduled tasks) and start the flow. Guide: [docs/windows-installer.md](docs/win
 
 ## Build
 
+With the repo checked out, either **`make`** (wraps Zig) or **`zig`** directly:
+
 ```bash
-zig build              # exe (Windows) / Linux binary + bridge
-zig build bridge       # Linux bridge (WSL2)
-zig build test         # app tests
-zig build test-bridge  # bridge tests (Linux-only)
+make                    # all three binaries, ReleaseSafe (xemonitor + bridge + gui)
+make test               # app tests
+zig build test-bridge   # bridge tests (Linux-only)
+make install            # build ReleaseSafe + install the 3 binaries into /usr/local/bin (sudo on copy only)
+make only-install       # copy what is already in zig-out/bin (no rebuild)
+make install-gui        # GUI only: build + install
+make install-bridge     # bridge only: build + install  (name: /usr/local/bin/xemonitor-bridge)
+make uninstall          # remove the 3 binaries from /usr/local/bin
+make clean              # remove zig-out + .zig-cache
 ```
 
-Requirement: **Zig 0.16.0** (Windows: `C:\zig\zig-x86_64-windows-0.16.0\`; WSL/CachyOS: 0.16.0). Zig dependency: `serial` (ZigEmbeddedGroup), pinned via `build.zig.zon`.
+Or directly with Zig:
+
+```bash
+zig build              # xemonitor (Linux binary) — Windows builds the exe instead
+zig build gui          # xemonitor-gui (glibc, SDL3 + dvui)
+zig build bridge       # xemonitor-bridge (musl static)
+zig build test         # app tests
+```
+
+### Dependencies
+
+- **Zig 0.16.0** (Windows: `C:\zig\zig-x86_64-windows-0.16.0\`; WSL/CachyOS: 0.16.0).
+- **`libserialport`** for the serial driver. Windows: `C:\msys64\ucrt64\`
+  (MSYS2/ucrt64); Linux: distro package (`libserialport`), or built by Zig.
+- **`libdbus-1-dev`** (Linux, GUI tray SNI) — CI installs it via apt; needed when
+  compiling `xemonitor-gui`.
+- Zig deps pinned via `build.zig.zon`: `serial` (ZigEmbeddedGroup) and
+  `dvui` (SDK3/SDL3 UI) — resolved with `zig build --fetch`.
+- Runtime injectors (Linux): none required by default (native `/dev/uinput`);
+  optional `ydotool` (Wayland) / `xdotool` (X11) as fallbacks.
 
 ## Usage
 
@@ -187,12 +221,14 @@ src/bridge.py         → legacy Python bridge (stdlib-only)
 src/index.html        → embedded page for the bridge HTTP mode
 assets/xemonitor.desktop → desktop entry (window/menu icon, Wayland)
 build.zig             → build script (exe + bridge + gui + tests)
-install.sh            → Linux installer (curl | bash)
+Makefile              → make all/install/only-install/uninstall/clean (wraps Zig)
+install.sh            → Linux installer (curl | bash; v1.5.0: default systemd-user)
 uninstall.sh          → Linux uninstaller source; bundled into the release as
                         /usr/local/bin/xemonitor-uninstall (--purge removes config+logs)
 diagnose_xemonitor.sh → Linux host diagnostics / self-recovery (--check, --fix, --test-serial)
 .github/workflows/release.yml → CI/CD: v* tags → musl build + gui (ubuntu-22.04) → GitHub Release
-run_xemonitor.sh      → (Linux) bridge systemd + GUI with tray (auto_start)
+run_xemonitor         → (Linux) control console: run_xemonitor start|stop|status (installed)
+run_xemonitor.sh      → (Linux) dev entrypoint: bridge systemd-user + GUI with tray (auto_start)
 stop_xemonitor.sh     → (Linux) stops GUI + client + bridge
 status_xemonitor.sh   → (Linux) status of service/GUI/client/serial + config dir
 run_bridge.bat        → USB attach + bridge (Alpine/Arch) + xemonitor + Notepad

@@ -45,7 +45,7 @@
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
-INSTALL_VERSION="1.4.2"
+INSTALL_VERSION="1.5.0"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
@@ -57,6 +57,7 @@ QUIET=0
 VERBOSE=0
 CLIENT_ONLY=0
 BRIDGE_ONLY=0
+SYSTEM_SERVICE=0
 REAL_USER="${SUDO_USER:-${USER:-}}"
 MISSING_GROUPS=""
 YDOTOOL_UNIT=""
@@ -64,22 +65,31 @@ YDOTOOL_SESSION="wayland"
 
 usage() {
     cat <<'HELP'
-XeMonitor - instalador Linux (v1.4.2)
+XeMonitor - instalador Linux (v1.5.0)
 
 Uso:
   curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
 
 Instala o bridge (servidor serial->TCP) e o xemonitor (cliente teclado virtual)
 em /usr/local/bin, configura as regras udev (CH340 + uinput), adiciona o usuario
-aos grupos de acesso serial/uinput (uucp/dialout/input) e instala o servico do
-bridge (systemd ou OpenRC).
+aos grupos de acesso serial/uinput (uucp/dialout/input) e prepara o auto-start
+do bridge no login.
+
+Paradigma padrao (v1.5.0): em sessao grafica com systemd, o bridge usa a unit
+de USUARIO (~/.config/systemd/user/xemonitor-bridge.service, via sg, sem sudo)
+e o GUI inicia no login (autostart) com server_mode=systemd-user. O console de
+controle e instalado em /usr/local/bin/run_xemonitor (start|stop|status).
+Use --system para instalar o servico de SISTEMA (root, boot real/headless),
+espelhando `run_xemonitor.sh --system`.
 
 O desinstalador tambem e instalado: /usr/local/bin/xemonitor-uninstall
   (use 'xemonitor-uninstall --purge' para remover config + logs).
 
 Opcoes:
   --prefix <dir>       prefixo de instalacao (padrao: /usr/local)
-  --no-service         nao instala/inicia o servico (so binarios + udev)
+  --no-service         nao instala/inicia servico/unit (so binarios + udev)
+  --system             servico do bridge de SISTEMA (root; busca tambem boot real).
+                       Default: unit de USUARIO (sessao grafica + systemd).
   --check-only         valida requisitos sem instalar (exit 0 se OK, 1 se faltar)
   --dry-run            simula instalacao mostrando passos sem executar sudo
   --validate           roda validacao pos-install (padrao: ON)
@@ -104,6 +114,7 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --prefix) PREFIX="${2:-/usr/local}"; shift 2 ;;
         --no-service) SERVICE=0; shift ;;
+        --system) SYSTEM_SERVICE=1; shift ;;
         --check-only) CHECK_ONLY=1; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         --validate) VALIDATE=1; shift ;;
@@ -360,8 +371,23 @@ if [ "$LIBC" = "glibc" ] && [ "$SESSION_TYPE" != "tty" ] && [ "$BRIDGE_ONLY" = "
 fi
 log "GUI disponivel: ${GUI_AVAILABLE} (libc=${LIBC} sessao=${SESSION_TYPE})"
 
+# ---------- Modo do servico/unit do bridge ----------
+# Paradigma v1.5.0: sessao grafica + systemd + usuario real -> unit de USUARIO
+# (sg, sem sudo; autostart do GUI sobe o bridge no login). --system força a unit
+# de SISTEMA. OpenRC (WSL/Alpine) e systemd headless/tty continuam em mode system.
+SERVICE_MODE="system"
+if [ "$INIT" = "systemd" ] && [ "$GUI_AVAILABLE" = "1" ] && [ "$SYSTEM_SERVICE" = "0" ] \
+    && [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
+    SERVICE_MODE="user"
+fi
+if [ "$SYSTEM_SERVICE" = "1" ]; then
+    log "modo do bridge: ${SERVICE_MODE} (--system forcado)"
+else
+    log "modo do bridge: ${SERVICE_MODE}"
+fi
+
 if [ "$CHECK_ONLY" = "1" ]; then
-    log "check-only: OK (requisitos atendidos, init=${INIT}, libc=${LIBC}, sessao=${SESSION_TYPE}, gui=${GUI_AVAILABLE})"
+    log "check-only: OK (requisitos atendidos, init=${INIT}, libc=${LIBC}, sessao=${SESSION_TYPE}, gui=${GUI_AVAILABLE}, bridge_mode=${SERVICE_MODE})"
     exit 0
 fi
 
@@ -486,6 +512,39 @@ if [ -f "$TMP/xemonitor-diagnose" ]; then
     sudo_run install -m 0755 "$TMP/xemonitor-diagnose" "$BIN_DIR/xemonitor-diagnose"
     log "diagnostico instalado em ${BIN_DIR}/xemonitor-diagnose"
 fi
+
+# ---------- 6b. Entrypoints (run_xemonitor start|stop|status) ----------
+# Entrada padrao do paradigma atual: um executavel sem extensao que despacha
+# pros scripts canonicos. No release vem em dist/entrypoint/; em releases
+# antigos, fallback best-effort via raw.githubusercontent (main). A falha nao
+# e fatal (o autostart do GUI cobre o resto).
+ENTRYPOINT_NAMES="run_xemonitor run_xemonitor.sh stop_xemonitor.sh status_xemonitor.sh"
+if [ -d "$TMP/entrypoint" ]; then
+    ENTRY_OK=1
+    for n in $ENTRYPOINT_NAMES; do
+        if [ -f "$TMP/entrypoint/$n" ]; then
+            sudo_run install -m 0755 "$TMP/entrypoint/$n" "$BIN_DIR/$n"
+        else
+            ENTRY_OK=0
+            warn "release sem ${n} em dist/entrypoint (baixando de main)..."
+        fi
+    done
+else
+    ENTRY_OK=0
+fi
+if [ "$ENTRY_OK" = "0" ]; then
+    for n in $ENTRYPOINT_NAMES; do
+        if [ -f "$BIN_DIR/$n" ]; then
+            continue
+        fi
+        if curl_fetch "https://raw.githubusercontent.com/${REPO}/main/${n}" "${TMP}/${n}" 2>/dev/null; then
+            sudo_run install -m 0755 "$TMP/$n" "$BIN_DIR/$n"
+        else
+            warn "falha ao baixar ${n} de main; rode o GUI autostart como entrada."
+        fi
+    done
+fi
+log "entrypoints instalados em ${BIN_DIR}/ (run_xemonitor start|stop|status)."
 
 sudo_run mkdir -p "${PREFIX}/share/xemonitor"
 printf '%s\n' "$VERSION" | sudo_run tee "${PREFIX}/share/xemonitor/VERSION" > /dev/null
@@ -696,10 +755,15 @@ EOF
         CFG_DIR_USER="$USER_HOME/.config/xemonitor"
         sudo_run mkdir -p "$CFG_DIR_USER"
         if [ ! -f "$CFG_DIR_USER/xemonitor-gui.conf" ]; then
+            # family: o GUI reconcilia em runtime o systemd-user vs systemd-system
+            # (ver gui.zig computeShortBridgeStatus), entao o conf segue o modo
+            # escolhido pelo instalador.
+            CONF_SERVER_MODE="systemd-system"
+            [ "$SERVICE_MODE" = "user" ] && CONF_SERVER_MODE="systemd-user"
             cat > "$TMP/xemonitor-gui.conf" <<EOF
 tcp_host=127.0.0.1
 tcp_port=9000
-server_mode=systemd-system
+server_mode=${CONF_SERVER_MODE}
 bridge_path=${BIN_DIR}/xemonitor-bridge
 client_path=${BIN_DIR}/xemonitor
 log_path=${CFG_DIR_USER}/xemonitor.log
@@ -768,11 +832,58 @@ fi
 # ---------- 15. Servico do bridge ----------
 if [ "$SERVICE" = "1" ] && [ "$CLIENT_ONLY" = "0" ]; then
     if [ "$INIT" = "systemd" ]; then
-        if [ -f "$TMP/systemd/xemonitor-bridge.service" ]; then
-            SVC_UNIT="$TMP/systemd/xemonitor-bridge.service"
+        if [ "$SERVICE_MODE" = "user" ] && [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
+            # Paradigma default: unit de USUARIO (~/.config/systemd/user), via sg.
+            # Sem sudo no runtime; o GUI (auto_start) e o auto-login de default.target
+            # sobem o bridge. O device vai embutido na unit (nao depende de /etc/xemonitor).
+            USER_HOME_U="$(getent passwd "$REAL_USER" | cut -d: -f6)"
+            [ -n "$USER_HOME_U" ] || USER_HOME_U="$HOME"
+            [ -d "$USER_HOME_U" ] || USER_HOME_U="$HOME"
+            SERIAL_GROUP="uucp"
+            getent group uucp >/dev/null 2>&1 || SERIAL_GROUP="dialout"
+            USER_UNIT_DIR="$USER_HOME_U/.config/systemd/user"
+            sudo_run mkdir -p "$USER_UNIT_DIR"
+            cat > "$TMP/xemonitor-bridge-user.service" <<UNITEOF
+[Unit]
+Description=XeMonitor serial-to-TCP bridge (Honeywell 1900 / CH340) [user]
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sg ${SERIAL_GROUP} -c '${BIN_DIR}/xemonitor-bridge --http --device "$DETECTED_DEVICE"'
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+UNITEOF
+            sudo_run install -m 0644 "$TMP/xemonitor-bridge-user.service" "$USER_UNIT_DIR/xemonitor-bridge.service"
+            sudo_run chown -R "$REAL_USER" "$USER_UNIT_DIR" 2>/dev/null || true
+            log "unit systemd de USUARIO instalada (${USER_UNIT_DIR}/xemonitor-bridge.service)."
+
+            # Guarda de conflito (KNOWN_ISSUES #23): servico de SISTEMA legado
+            # segura a porta 9000 com Restart=always. Desativa ao migrar.
+            if systemctl is-active --quiet xemonitor-bridge 2>/dev/null; then
+                log "servico de sistema ativo (legado) -> parando/desabilitando (default e user unit)."
+                sudo_run systemctl stop xemonitor-bridge 2>/dev/null || true
+                sudo_run systemctl disable xemonitor-bridge 2>/dev/null || true
+            fi
+
+            USER_XDG="XDG_RUNTIME_DIR=/run/user/$(id -u "$REAL_USER")"
+            if [ "$DRY_RUN" = "1" ]; then
+                log "[dry-run] systemctl --user daemon-reload/enable/restart xemonitor-bridge (como ${REAL_USER})"
+            else
+                sudo_user_run "$REAL_USER" env "$USER_XDG" systemctl --user daemon-reload >/dev/null 2>&1 || true
+                sudo_user_run "$REAL_USER" env "$USER_XDG" systemctl --user enable xemonitor-bridge >/dev/null 2>&1 || true
+                sudo_user_run "$REAL_USER" env "$USER_XDG" systemctl --user restart xemonitor-bridge 2>/dev/null || true
+            fi
+            log "unit systemd de usuario habilitada e iniciada (bridge_mode=user)."
         else
-            SVC_UNIT="$TMP/xemonitor-bridge.service"
-            cat > "$SVC_UNIT" <<EOF
+            if [ -f "$TMP/systemd/xemonitor-bridge.service" ]; then
+                SVC_UNIT="$TMP/systemd/xemonitor-bridge.service"
+            else
+                SVC_UNIT="$TMP/xemonitor-bridge.service"
+                cat > "$SVC_UNIT" <<EOF
 [Unit]
 Description=XeMonitor serial-to-TCP bridge (Honeywell 1900 / CH340)
 After=network-online.target
@@ -787,17 +898,30 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-        fi
-        log "instalando servico systemd..."
-        sudo_run install -m 0644 "$SVC_UNIT" /etc/systemd/system/xemonitor-bridge.service
-        sudo_run systemctl daemon-reload
-        if [ "$REINSTALL" = "1" ]; then
-            sudo_run systemctl restart xemonitor-bridge 2>/dev/null || true
-            log "servico systemd 'xemonitor-bridge' reiniciado."
-        else
-            sudo_run systemctl enable xemonitor-bridge >/dev/null 2>&1 || true
-            sudo_run systemctl start xemonitor-bridge 2>/dev/null || true
-            log "servico systemd 'xemonitor-bridge' instalado e iniciado."
+            fi
+            log "instalando servico systemd (sistema)..."
+            sudo_run install -m 0644 "$SVC_UNIT" /etc/systemd/system/xemonitor-bridge.service
+            sudo_run systemctl daemon-reload
+
+            # Guarda de conflito: se uma unit de USUARIO estiver ativa, para
+            # (cliente do modo --system; espelho do run_xemonitor.sh --system).
+            if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
+                if sudo_user_run "$REAL_USER" env XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" \
+                    systemctl --user is-active --quiet xemonitor-bridge 2>/dev/null; then
+                    log "unit de usuario ativa -> parando (modo --system)."
+                    sudo_user_run "$REAL_USER" env XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" \
+                        systemctl --user stop xemonitor-bridge 2>/dev/null || true
+                fi
+            fi
+
+            if [ "$REINSTALL" = "1" ]; then
+                sudo_run systemctl restart xemonitor-bridge 2>/dev/null || true
+                log "servico systemd 'xemonitor-bridge' reiniciado."
+            else
+                sudo_run systemctl enable xemonitor-bridge >/dev/null 2>&1 || true
+                sudo_run systemctl start xemonitor-bridge 2>/dev/null || true
+                log "servico systemd 'xemonitor-bridge' instalado e iniciado."
+            fi
         fi
     elif [ "$INIT" = "openrc" ]; then
         if [ -f "$TMP/openrc/xemonitor-bridge" ]; then
@@ -844,13 +968,23 @@ if [ "$VALIDATE" = "1" ] && [ "$SERVICE" = "1" ] && [ "$INIT" != "none" ] && [ "
     log "validando instalacao..."
     VALIDATION_FAILED=0
 
-    # 16a. Servico ativo
+    # 16a. Bridge ativo (unit/servico do modo escolhido)
     if [ "$INIT" = "systemd" ]; then
-        if ! systemctl is-active --quiet xemonitor-bridge; then
-            warn "servico systemd 'xemonitor-bridge' nao esta ativo."
-            VALIDATION_FAILED=1
+        if [ "$SERVICE_MODE" = "user" ] && [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
+            if sudo_user_run "$REAL_USER" env XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" \
+                    systemctl --user is-active --quiet xemonitor-bridge 2>/dev/null; then
+                log "unit systemd de USUARIO ativa."
+            else
+                warn "unit systemd de usuario 'xemonitor-bridge' nao esta ativa."
+                VALIDATION_FAILED=1
+            fi
         else
-            log "servico systemd ativo."
+            if ! systemctl is-active --quiet xemonitor-bridge; then
+                warn "servico systemd 'xemonitor-bridge' nao esta ativo."
+                VALIDATION_FAILED=1
+            else
+                log "servico systemd ativo."
+            fi
         fi
     elif [ "$INIT" = "openrc" ]; then
         if ! rc-service xemonitor-bridge status 2>/dev/null | grep -q "started"; then
@@ -971,7 +1105,11 @@ fi
 # ---------- 17. Resumo ----------
 SERVICE_MSG=""
 if [ "$SERVICE" = "1" ] && [ "$INIT" != "none" ] && [ "$CLIENT_ONLY" = "0" ]; then
-    SERVICE_MSG="O servico do bridge ja esta ativo (${INIT}, device=${DETECTED_DEVICE}). Escaneie um codigo:"
+    if [ "$SERVICE_MODE" = "user" ]; then
+        SERVICE_MSG="O bridge ja esta ativo via systemd-USUARIO (device=${DETECTED_DEVICE}). Controle: run_xemonitor start|stop|status"
+    else
+        SERVICE_MSG="O servico do bridge ja esta ativo (${INIT}, device=${DETECTED_DEVICE}). Escaneie um codigo:"
+    fi
 elif [ "$CLIENT_ONLY" = "1" ]; then
     SERVICE_MSG="Modo --client-only: bridge NAO foi instalado. Conecte a um bridge remoto:"
 else
@@ -990,11 +1128,21 @@ STATUS_BLOCK=""
 if [ "$SERVICE" = "1" ] && [ "$INIT" != "none" ] && [ "$CLIENT_ONLY" = "0" ]; then
     STATUS_BLOCK+="  ${C_BOLD}Estado atual:${C_NC}${NL}"
     if [ "$INIT" = "systemd" ]; then
-        STATE="$(systemctl is-active xemonitor-bridge 2>/dev/null || echo unknown)"
+        STATE="unknown"
+        SCOPE="systemd"
+        if [ "$SERVICE_MODE" = "user" ] && [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
+            SCOPE="systemd-user"
+            if sudo_user_run "$REAL_USER" env XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" \
+                    systemctl --user is-active xemonitor-bridge 2>/dev/null | grep -q "^active$"; then
+                STATE="active"
+            fi
+        elif systemctl is-active xemonitor-bridge 2>/dev/null | grep -q "^active$"; then
+            STATE="active"
+        fi
         if [ "$STATE" = "active" ]; then
-            STATUS_BLOCK+="    ${C_GREEN}OK${C_NC}  servico systemd: active${NL}"
+            STATUS_BLOCK+="    ${C_GREEN}OK${C_NC}  bridge (${SCOPE}): active${NL}"
         else
-            STATUS_BLOCK+="    ${C_RED}--${C_NC}  servico systemd: ${STATE}${NL}"
+            STATUS_BLOCK+="    ${C_RED}--${C_NC}  bridge (${SCOPE}): ${STATE}${NL}"
         fi
     fi
     if ss -tln 2>/dev/null | grep -q ':9000'; then
@@ -1062,6 +1210,8 @@ RESUMO+="  Init:   ${INIT} | libc: ${LIBC} | sessao: ${SESSION_TYPE}${NL}"
 RESUMO+="${C_CIANO}------------------------------------------------------------${C_NC}${NL}"
 RESUMO+="  ${C_BLUE}Bridge:${C_NC}  ${BIN_DIR}/xemonitor-bridge   (serial -> TCP :9000, device=${DETECTED_DEVICE})${NL}"
 RESUMO+="  ${C_BLUE}Cliente:${C_NC} ${BIN_DIR}/xemonitor${NL}"
+RESUMO+="  ${C_BLUE}Controle:${C_NC} ${BIN_DIR}/run_xemonitor start|stop|status${NL}"
+RESUMO+="    (default: unit de USUARIO; use '--system' p/ servico de sistema)${NL}"
 RESUMO+="${GUI_SUMMARY}${NL}"
 RESUMO+="${DIAG_SUMMARY}${NL}"
 RESUMO+="${STATUS_BLOCK}"

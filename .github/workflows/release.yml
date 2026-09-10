@@ -91,11 +91,18 @@ jobs:
           chmod +x dist/xemonitor-diagnose
           # Ícone do app (hicolor 512x512; renomeado sem espaço p/ o tar)
           cp "src/Barcode Scanner.png" dist/xemonitor.png
-          mkdir -p dist/openrc dist/systemd dist/scripts
+          mkdir -p dist/openrc dist/systemd dist/scripts dist/entrypoint
           cp openrc/xemonitor-bridge dist/openrc/xemonitor-bridge
           cp systemd/xemonitor-bridge.service dist/systemd/xemonitor-bridge.service
           cp scripts/install_bridge_service.sh dist/scripts/install_bridge_service.sh
-          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall xemonitor-diagnose xemonitor.png openrc systemd scripts
+          # Entrypoints (console de controle do paradigma atual; install.sh instala
+          # em /usr/local/bin e instala a unit de usuario do bridge).
+          cp run_xemonitor dist/entrypoint/run_xemonitor
+          cp run_xemonitor.sh dist/entrypoint/run_xemonitor.sh
+          cp stop_xemonitor.sh dist/entrypoint/stop_xemonitor.sh
+          cp status_xemonitor.sh dist/entrypoint/status_xemonitor.sh
+          chmod +x dist/entrypoint/run_xemonitor dist/entrypoint/run_xemonitor.sh dist/entrypoint/stop_xemonitor.sh dist/entrypoint/status_xemonitor.sh
+          tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall xemonitor-diagnose xemonitor.png openrc systemd scripts entrypoint
           sha256sum xemonitor-linux-x86_64.tar.gz | tee xemonitor-linux-x86_64.tar.gz.sha256
 
       - name: Upload Linux artifacts

@@ -67,6 +67,16 @@ sudo_run() {
     fi
 }
 
+# roda um comando como outro usuario via sudo (respeitando SUDO_ASKPASS se definido)
+sudo_user_run() {
+    local user="$1"; shift
+    if [ "$(id -u)" -eq 0 ]; then
+        su -s /bin/sh "$user" -c "$*"
+    else
+        sudo -u "$user" "$@"
+    fi
+}
+
 # detectar init
 INIT="none"
 if [ -d /run/systemd/system ] || command -v systemctl >/dev/null 2>&1; then
@@ -103,6 +113,15 @@ if [ "$INIT" = "systemd" ]; then
         sudo_run systemctl --user disable xemonitor-gui 2>/dev/null || true
         sudo_run rm -f /etc/systemd/user/xemonitor-gui.service
     fi
+    USER_BRIDGE_UNIT="${USER_HOME}/.config/systemd/user/xemonitor-bridge.service"
+    if [ -f "$USER_BRIDGE_UNIT" ]; then
+        log "removendo a unit systemd de USUARIO do bridge..."
+        if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
+            sudo_user_run "$REAL_USER" env XDG_RUNTIME_DIR="/run/user/$(id -u "$REAL_USER")" \
+                systemctl --user disable --now xemonitor-bridge 2>/dev/null || true
+        fi
+        sudo_run rm -f "$USER_BRIDGE_UNIT"
+    fi
     sudo_run systemctl daemon-reload >/dev/null 2>&1 || true
 elif [ "$INIT" = "openrc" ]; then
     if [ -f /etc/init.d/xemonitor-bridge ]; then
@@ -115,6 +134,12 @@ fi
 
 # ---------- 3. binarios e dados de aplicativo ----------
 for b in xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall; do
+    [ -f "${BIN_DIR}/${b}" ] || continue
+    log "removendo ${BIN_DIR}/${b}..."
+    sudo_run rm -f "${BIN_DIR}/${b}"
+done
+# Entrypoints do paradigma atual (run_xemonitor start|stop|status)
+for b in run_xemonitor run_xemonitor.sh stop_xemonitor.sh status_xemonitor.sh; do
     [ -f "${BIN_DIR}/${b}" ] || continue
     log "removendo ${BIN_DIR}/${b}..."
     sudo_run rm -f "${BIN_DIR}/${b}"

@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.8.12] — 2026-09-09
+
+### Added
+
+- **Console de controle `run_xemonitor`** (`start|stop|status`) — um único
+  executável sem extensão que despacha para `run_xemonitor.sh` /
+  `stop_xemonitor.sh` / `status_xemonitor.sh` (irmãos no mesmo diretório).
+  Instalado pelo `install.sh` em `/usr/local/bin` e empacotado no release
+  (`dist/entrypoint/`). Funciona do repo e do sistema instalado.
+- **`install.sh` v1.5.0 — paradigma default de unit de USUARIO** — em sessão
+  gráfica com systemd o instalador agora cria a unit
+  `~/.config/systemd/user/xemonitor-bridge.service` (via `sg`, sem sudo no
+  runtime), a habilita e inicia, grava `server_mode=systemd-user` na conf do
+  GUI e desativa o serviço de sistema legado (guarda da porta 9000,
+  KNOWN_ISSUES #23). A reinstalação migra instalações antigas para o novo
+  default. Novo flag **`--system`** força o serviço de SISTEMA (espelha
+  `run_xemonitor.sh --system`); OpenRC/headless continuam com serviço de
+  sistema automaticamente.
+- **Makefile** — `make all/install/only-install/install-gui/install-bridge/
+  uninstall/clean` (build ReleaseSafe + copia os 3 binários; `SUDO` só na cópia).
+- **README** — seção Build/Makefile + lista de Dependências, instalação Linux
+  atualizada para o paradigma v1.5.0.
+
+### Changed
+
+- **`install.sh`** — validação (16) e bloco de status (17) checam a unit/serviço
+  do modo escolhido (user via `XDG_RUNTIME_DIR`, system, ou OpenRC); resumo
+  ganha a linha `run_xemonitor start|stop|status`.
+- **`uninstall.sh`** — passa a remover a unit de USUARIO do bridge
+  (`~/.config/systemd/user/xemonitor-bridge.service`, `systemctl --user disable
+  --now`) e os entrypoints (`run_xemonitor` + 3 scripts).
+- **`release.yml`** — tarball embute `entrypoint/` (run_xemonitor + 3 scripts).
+- **Versão** — `VERSION` + `assets/xemonitor.rc` em **0.8.12**.
+
 ## [0.8.11] — 2026-09-09
 
 ### Fixed
