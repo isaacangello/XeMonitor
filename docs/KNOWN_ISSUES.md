@@ -402,3 +402,47 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
 - **Anti-regra**: **um padrão por `pkill/pgrep`**; para múltiplos nomes,
   ou chamadas separadas ou regex única (`pkill -x 'xemonitor(-gui)?'`).
 - **Refs**: auditoria 2026-09-10, empírico `pgrep: apenas um padrão`.
+
+## 34. Linux — bridge "não escaneia": hang no `open()` por DCD + flood de retransmissão do scanner (CORRIGIDO v0.8.15)
+- **Sintoma A (hang no open)**: o bridge rodando (via unit root ou de
+  usuário) "não escaneava" — thread do reader parada no syscall 2 (`open`),
+  **sem fd serial aberto**, e o journal **sem** as linhas `configuring serial`
+  e `DTR+RTS: ok`. Intermitente: funcionava às 10:28 e travava às 11:48 do
+  mesmo dia. Diagnóstico via
+  `/proc/<bridge>/task/*/syscall` (tid parado em `2`, sem fds tty em
+  `/proc/<bridge>/fd`).
+- **Causa A**: `open("/dev/ttyUSB0")` **sem `O_NONBLOCK`** cai em
+  `tty_port_block_til_ready` esperando **carrier detect (DCD)** que o driver
+  ch341 não afirma enquanto o scanner está ocioso (DCD só sobe quando o
+  Honeywell transmite). Como o scanner "fala" só quando bipa, o open ficava
+  indefinidamente → nothing a ser lido. O keep-alive DTR/RTS de 2s deixava a
+  janela frágil: se o open caísse na janela sem DCD, travava.
+- **Fix A**: `O_NONBLOCK` nos 3 `c.open()` de `src/bridge.zig` (autoDetect +
+  openSerial) e, no `openSerial`, limpeza do flag via
+  `fcntl(F_SETFL, fd, fl & ~O_NONBLOCK)` **depois** do `configureSerial` —
+  o `read()` volta a usar VMIN/VTIME. O `TIOCMBIS` (DTR|RTS) continua
+  obrigatório e é reafirmado logo após o `tcsetattr`.
+- **Sintoma B (flood de retransmissão)**: captura crua com **nenhum software
+  XeMonitor rodando** (só leitor de python): 3.050.818 bytes em 15s =
+  **203.388 frames idênticos** do último código decodificado (`7898567704461\r\n`),
+  zero lixo. Explicava as centenas de entradas iguais no histórico e as
+  "perdas" originais (scans reais reais se intercalavam no flood, sem ACK).
+- **Causa B**: modo serial do Honeywell 1900 que **retransmite infinitamente**
+  o último código até receber **ACK do host (0x06)** (protocolo de
+  reconhecimento típico de scanner serial). O bridge lê cada frame como um
+  scan novo — sem dedupe por decisão do usuário ("manter 100%").
+- **Mitigação B**: com o fix A, os scans reais entram corretamente. O flood
+  é um comportamento do **scanner** (que o usuário pode desligar
+  reconfigurando o modo "ACK/NAK" pelo Programming Guide do Honeywell 1900);
+  alternativa futura: responder `0x06` no bridge por frame.
+- **Validação (CachyOS, 2026-09-10)**: bridge (unit systemd de usuário, `sg
+  uucp`, `--http --device by-id`) + cliente `xemonitor --tcp` headless e via
+  GUI; scan real injetado com 100% de entrega; histórico SSE mostrando 1 linha
+  por frame; backup `xemonitor-scans-2026-09-10.log` com timestamps; GUI
+  restart recarrega o backup.
+- **Anti-regra**: (1) `open()` de tty **sempre** com `O_NONBLOCK`; limpar o
+  flag só depois do termios, senão o `read` fica polling. (2) Não remover o
+  `TIOCMBIS(DTR|RTS)` após `tcsetattr` — o Honeywell serial só transmite com
+  **DTR+RTS ativos** (ver seção 5b).
+- **Refs**: diagnóstico empírico 2026-09-10 (threads `/proc`, captura crua
+  `/tmp/raw_idle.bin`, journal da unit); fix em `src/bridge.zig`.

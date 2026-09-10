@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.8.15] — 2026-09-10
+
+### Added
+
+- **GUI — histórico em tempo real com backup persistente** — o painel de
+  histórico passou a receber os scans **ao vivo via SSE** do bridge (fonte
+  primária; o stderr do cliente virou fallback quando o SSE está offline —
+  antes cada scan entrava **duplicado**, um por caminho). Cada scan real vira
+  **1 linha**, e a GUI **apenda cada leitura** em um arquivo datado
+  `xemonitor-scans-YYYY-MM-DD.log` na pasta de config (backup independente do
+  bridge/cliente). Abrir a GUI **recarrega o arquivo de hoje** (backfill com
+  timestamps originais), então o histórico sobrevive a restart. Janela em
+  memória: 200 → **1000** (prune automático). Botão **"Abrir backup"** abre o
+  arquivo de scans (xdg-open / cmd start). Mensagens novas en/pt
+  (`msg_scans_backup_failed`, `msg_scans_open_ok/failed`).
+- **GUI — auto-restart do cliente gerenciado** — se o `xemonitor` (filho)
+  morrer, a GUI o reinicia com backoff 2s→5s→10s (reset após 15s estáveis). O
+  status do painel mostra `PID  scans  last HH:MM:SS` (ou
+  `stopped (exit d)`), e no startup a GUI **mata clientes órfãos** de sessões
+  anteriores (`killStaleClient`, Linux).
+- **Botões novos no painel**: **Limpar** (limpa a janela de histórico, o
+  backup em disco é preservado) e **Abrir arquivo de log** (janela de Log —
+  abre o `xemonitor-YYYY-MM-DD.log` de hoje).
+
+### Fixed
+
+- **`bridge.zig` — `open()` travado no DCD detect (hang do CH340)** — o
+  `open()` sem `O_NONBLOCK` espera carrier detect (`tty_port_block_til_ready`)
+  que o ch341 não afirma com o scanner ocioso; o thread reader ficava parado
+  no syscall 2 sem nunca abrir a serial ("não escaneia"). Agora os 3 `open()`
+  usam `O_NONBLOCK` e o flag é limpo via `fcntl(F_SETFL, ~O_NONBLOCK)` após o
+  `tcsetattr`, voltando o `read()` a usar VMIN/VTIME. (KNOWN_ISSUES #34)
+- **keep-alive DTR/RTS removido (perda intermitente de scan)** — reacionar
+  DTR/RTS a cada 2s podia derrubar/embaralhar frames; removido (config serial
+  115200 8N1 + assert inicial de DTR/RTS é o suficiente). (KNOWN_ISSUES #34)
+- **`build.zig.zon` sincronizado** — `.version`/`.bridge_version` estavam
+  travados em `0.8.2` desde o 0.8.3; agora seguem `VERSION` (0.8.15).
+
+### Docs
+
+- `docs/KNOWN_ISSUES.md` #34 — diagnóstico "bridge não escaneia": (a) DCD hang
+  no `open()`; (b) flood de retransmissão do scanner (Honeywell serial
+  re-emite o último código sem ACK do host); causas, fixes e validação do
+  CachyOS em 2026-09-10.
+
 ## [0.8.14] — 2026-09-10
 
 ### Added

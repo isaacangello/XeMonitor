@@ -507,6 +507,7 @@ const App = struct {
     log_open: bool = false,
     log_lines: std.ArrayList(LogLine),
     scans: std.ArrayList(ScanEntry),
+    scans_backup_broken: bool = false,
 
     host_buf: [64]u8,
     port_buf: [8]u8,
@@ -525,6 +526,14 @@ const App = struct {
     last_scan_time_ns: i128 = 0,
     watchdog_state: u8 = 0,
     usb_warned: bool = false,
+
+    // Gerenciamento do cliente como processo filho: client_managed indica que
+    // a GUI deve ressuscitar o xemonitor se ele cair (exit inesperado), com
+    // backoff. Desligada no stop explícito do usuário (botão/quit).
+    client_managed: bool = false,
+    client_restart_count: u32 = 0,
+    client_restart_backoff_ns: i128 = 2 * ns_per_s,
+    client_last_restart_at: i128 = 0,
 
     // Operações do bridge_ctl rodam em thread (wsl.exe spawn síncrono
     // congelava a UI). Resultado volta via async_msg (mutex + buffer).
@@ -661,24 +670,38 @@ const App = struct {
 };
 
 fn scansLimit() usize {
-    return 200;
+    return 1000;
 }
 fn logLinesLimit() usize {
     return 500;
 }
 
-fn pushScan(app: *App, code: []const u8) void {
-    app.last_scan_time_ns = app.nowNs();
-    const now_secs: u64 = @intCast(@divTrunc(app.nowNs(), ns_per_s));
-    const es = std.time.epoch.EpochSeconds{ .secs = now_secs };
+/// Formata segundos epoch como HH:MM:SS em buf. Retorna slice em buf (vazio
+/// se buffer pequeno demais). Usado pela lista de scans e pelo status.
+fn formatHms(secs: u64, buf: []u8) []const u8 {
+    const es = std.time.epoch.EpochSeconds{ .secs = secs };
     const ds = es.getDaySeconds();
+    return std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}:{d:0>2}", .{
+        ds.getHoursIntoDay(),
+        ds.getMinutesIntoHour(),
+        ds.getSecondsIntoMinute(),
+    }) catch buf[0..0];
+}
+
+fn pushScan(app: *App, code: []const u8) void {
+    const now_secs: u64 = @intCast(@divTrunc(app.nowNs(), ns_per_s));
     var tbuf: [32]u8 = undefined;
-    const tstr = std.fmt.bufPrint(
-        &tbuf,
-        "{d:0>2}:{d:0>2}:{d:0>2}",
-        .{ ds.getHoursIntoDay(), ds.getMinutesIntoHour(), ds.getSecondsIntoMinute() },
-    ) catch "00:00:00";
-    const tdup = app.gpa.dupe(u8, tstr) catch return;
+    const tstr = formatHms(now_secs, &tbuf);
+    pushScanAt(app, tstr, code, true);
+}
+
+/// Adiciona um scan à lista de histórico (janela em memória, cap 1000).
+/// Quando `write_backup`, também apenda no arquivo de backup datado
+/// (xemonitor-scans-YYYY-MM-DD.log). `pushScanAt` é a base compartilhada
+/// entre o fluxo ao vivo e o backfill do arquivo (que não re-escreve o backup).
+fn pushScanAt(app: *App, time_str: []const u8, code: []const u8, write_backup: bool) void {
+    app.last_scan_time_ns = app.nowNs();
+    const tdup = app.gpa.dupe(u8, time_str) catch return;
     const cdup = app.gpa.dupe(u8, code) catch return;
     app.scans.append(app.gpa, .{ .time = tdup, .code = cdup }) catch return;
     while (app.scans.items.len > scansLimit()) {
@@ -686,6 +709,98 @@ fn pushScan(app: *App, code: []const u8) void {
         app.gpa.free(old.time);
         app.gpa.free(old.code);
     }
+    if (write_backup) appendScansBackup(app, time_str, code);
+}
+
+/// Backup persistente dos scans: apenda "[HH:MM:SS] CODE" em
+/// xemonitor-scans-YYYY-MM-DD.log na pasta de config. Abre/fecha a cada
+/// escrita (roda só na thread da UI); na troca de dia o nome é recalculado.
+fn appendScansBackup(app: *App, time_str: []const u8, code: []const u8) void {
+    var date_buf: [10]u8 = undefined;
+    const date = todayDateStr(app.io, &date_buf);
+    if (date.len < 10) return;
+    var name_buf: [40]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{s}{s}.log", .{ paths.SCANS_LOG_PREFIX, date }) catch return;
+
+    var f = gui_cfg_dir.dir.createFile(app.io, name, .{ .truncate = false }) catch {
+        if (!app.scans_backup_broken) app.setMsg("msg_scans_backup_failed", .{});
+        app.scans_backup_broken = true;
+        return;
+    };
+    defer f.close(app.io);
+
+    const st = f.stat(app.io) catch {
+        app.setMsg("msg_scans_backup_failed", .{});
+        app.scans_backup_broken = true;
+        return;
+    };
+    var sbuf: [1]u8 = undefined;
+    var sw = f.writerStreaming(app.io, &sbuf);
+    sw.seekTo(st.size) catch {
+        app.setMsg("msg_scans_backup_failed", .{});
+        app.scans_backup_broken = true;
+        return;
+    };
+    var line_buf: [320]u8 = undefined;
+    const line = std.fmt.bufPrint(&line_buf, "[{s}] {s}\n", .{ time_str, code }) catch return;
+    sw.interface.writeAll(line) catch {
+        app.setMsg("msg_scans_backup_failed", .{});
+        app.scans_backup_broken = true;
+        return;
+    };
+    sw.interface.flush() catch {};
+    app.scans_backup_broken = false;
+}
+
+/// Recarrega o backup de scans de hoje para a janela (histórico sobrevive a
+/// restart). Preserva os timestamps originais do arquivo; não re-escreve o
+/// backup (write_backup=false).
+fn backfillScans(app: *App) void {
+    var date_buf: [10]u8 = undefined;
+    const date = todayDateStr(app.io, &date_buf);
+    if (date.len < 10) return;
+    var name_buf: [40]u8 = undefined;
+    const name = std.fmt.bufPrint(&name_buf, "{s}{s}.log", .{ paths.SCANS_LOG_PREFIX, date }) catch return;
+    const data = gui_cfg_dir.dir.readFileAlloc(app.io, name, app.gpa, std.Io.Limit.limited(16 * 1024 * 1024)) catch return;
+    defer app.gpa.free(data);
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \t\r");
+        if (line.len == 0) continue;
+        // Formato do arquivo: "[HH:MM:SS] CODE"
+        const close = std.mem.indexOf(u8, line, "] ");
+        const time_str = if (close) |ci| line[1..ci] else "";
+        const code = if (close) |ci| std.mem.trim(u8, line[ci + 2 ..], " \t") else line;
+        if (code.len == 0) continue;
+        pushScanAt(app, time_str, code, false);
+    }
+}
+
+fn clearScans(app: *App) void {
+    while (app.scans.items.len > 0) {
+        const old = app.scans.orderedRemove(0);
+        app.gpa.free(old.time);
+        app.gpa.free(old.code);
+    }
+    app.last_scan_time_ns = 0;
+}
+
+/// Texto de status do cliente exibido no painel: PID, contador de scans e
+/// hora da última leitura (ou exit code quando parado).
+fn clientStatusText(app: *App, buf: *[160]u8) []const u8 {
+    if (app.client.running.load(.seq_cst)) {
+        const pid = app.client.child_pid.load(.seq_cst);
+        var tbuf: [9]u8 = undefined;
+        const time = if (app.last_scan_time_ns > 0)
+            formatHms(@intCast(@divTrunc(app.last_scan_time_ns, ns_per_s)), &tbuf)
+        else
+            "--:--:--";
+        return std.fmt.bufPrint(buf, "PID {d}  scans {d}  last {s}", .{ pid, app.scans.items.len, time }) catch "running";
+    }
+    if (app.client.last_exit != 0) {
+        return std.fmt.bufPrint(buf, "stopped (exit {d})", .{app.client.last_exit}) catch "stopped";
+    }
+    return "stopped";
 }
 
 fn devCheckWorker(app: *App) void {
@@ -700,6 +815,28 @@ fn devCheckWorker(app: *App) void {
 // apenas estado em memoria (nao spawna processos).
 fn watchdogTick(app: *App) void {
     const client_running = app.client.running.load(.seq_cst);
+
+    // Auto-restart do cliente: se a GUI o gerencia e o processo caiu
+    // (crash/exit inesperado), ressuscita com backoff. O xemonitor já
+    // reconecta o TCP sozinho; este restart é só para processo morto.
+    // O botão "stop" desliga client_managed e cancela o ressuscitamento.
+    if (app.client_managed and !client_running) {
+        const now = app.nowNs();
+        if (now - app.client_last_restart_at >= app.client_restart_backoff_ns) {
+            app.client_last_restart_at = now;
+            app.client_restart_count += 1;
+            app.client_restart_backoff_ns = @min(app.client_restart_backoff_ns * 2, 10 * ns_per_s);
+            if (spawnClient(app)) |addr| {
+                app.gpa.free(addr);
+                app.setMsg("msg_client_restarted", .{app.client_restart_count});
+            } else |err| {
+                app.setMsg("msg_client_restart_failed", .{@errorName(err)});
+            }
+        }
+    } else if (client_running and app.nowNs() - app.client_last_restart_at > 15 * ns_per_s) {
+        app.client_restart_count = 0;
+        app.client_restart_backoff_ns = 2 * ns_per_s;
+    }
 
     // Aviso do scanner USB-Serial (CH340): no modo WSL, verifica se o
     // /dev/ttyUSB0 existe no WSL. Sem scanner conectado, nada funciona —
@@ -767,8 +904,12 @@ fn drainClientLines(app: *App) void {
     proc.q_mutex.unlock(app.io);
     for (drained.items) |line| {
         pushLogLine(app, line);
+        // Histórico primário = SSE do bridge. O stderr do cliente é fallback
+        // quando o SSE não está conectado (evita duplicar cada scan).
         if (std.mem.indexOf(u8, line, "[scan]") != null) {
-            if (extractScan(line)) |code| pushScan(app, code);
+            if (!app.history_connected.load(.seq_cst)) {
+                if (extractScan(line)) |code| pushScan(app, code);
+            }
         }
         app.gpa.free(line);
     }
@@ -1027,9 +1168,6 @@ fn backfillLog(app: *App) void {
         const line = std.mem.trimEnd(u8, raw, "\r");
         if (line.len == 0) continue;
         pushLogLine(app, line);
-        if (std.mem.indexOf(u8, line, "[scan]") != null) {
-            if (extractScan(line)) |code| pushScan(app, code);
-        }
     }
 }
 
@@ -1450,6 +1588,9 @@ fn spawnClient(app: *App) ![]const u8 {
     app.client.start(app.io, argv) catch |err| {
         return err;
     };
+    app.client_managed = true;
+    app.client_restart_count = 0;
+    app.client_restart_backoff_ns = 2 * ns_per_s;
     return addr;
 }
 
@@ -1480,6 +1621,7 @@ fn resolveSibling(gpa: std.mem.Allocator, io: std.Io, name: []const u8, out: *[5
 }
 
 fn stopClient(app: *App) void {
+    app.client_managed = false;
     app.client.stop(app.io);
     app.setMsg("msg_client_stopped", .{});
 }
@@ -1578,9 +1720,10 @@ fn renderClientPanel(app: *App) void {
 
     var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
     defer row2.deinit();
-    const running = app.client.running.load(.seq_cst);
     dvui.labelNoFmt(@src(), i18n.t("label_status"), .{}, .{});
-    dvui.labelNoFmt(@src(), if (running) i18n.t("status_running") else i18n.t("status_stopped"), .{}, .{});
+    var cbuf: [160]u8 = undefined;
+    const cstr = clientStatusText(app, &cbuf);
+    dvui.labelNoFmt(@src(), cstr, .{}, .{});
     if (dvui.button(@src(), i18n.t("btn_start"), .{}, .{})) {
         app.setCfgHostPort();
         startClient(app);
@@ -1681,6 +1824,8 @@ fn renderHistoryPanel(app: *App) void {
                 app.setMsg("msg_no_scans_export", .{});
             }
         }
+        if (dvui.button(@src(), i18n.t("btn_clear"), .{}, .{})) clearScans(app);
+        if (dvui.button(@src(), i18n.t("btn_open_backup"), .{}, .{})) openScansLogFile(app);
     }
 
     const state = dvui.dataGetPtrDefault(null, dvui.parentGet().data().id, "history", HistoryState, .{});
@@ -1709,6 +1854,75 @@ fn renderHistoryPanel(app: *App) void {
     }
 }
 
+/// Caminho absoluto do arquivo de log datado de hoje
+/// (ex. ~/.config/xemonitor/xemonitor-2026-09-10.log). Bufs separados porque o
+/// base_path aponta para um buffer local e o resultado vai em buf de novo.
+fn datedLogAbsolutePath(app: *App, buf: *[1024]u8) []const u8 {
+    var base_buf: [1024]u8 = undefined;
+    const is_abs = app.cfg.log_path.len > 0 and (app.cfg.log_path[0] == '/' or
+        (app.cfg.log_path.len > 1 and app.cfg.log_path[1] == ':'));
+    const base_path = if (is_abs) app.cfg.log_path
+    else std.fmt.bufPrint(&base_buf, "{s}{c}{s}", .{
+        gui_cfg_dir.path,
+        paths.sep,
+        if (app.cfg.log_path.len > 0) app.cfg.log_path else DEFAULT_LOG,
+    }) catch return buf[0..0];
+    var date_buf: [10]u8 = undefined;
+    const date = todayDateStr(app.io, &date_buf);
+    const last_sep = std.mem.lastIndexOfAny(u8, base_path, "/\\");
+    const dir = if (last_sep) |i| base_path[0 .. i + 1] else "";
+    return std.fmt.bufPrint(buf, "{s}{s}{s}.log", .{ dir, paths.LOG_PREFIX, date }) catch buf[0..0];
+}
+
+fn openDatedLogFile(app: *App) void {
+    var pbuf: [1024]u8 = undefined;
+    const path = datedLogAbsolutePath(app, &pbuf);
+    const data = readFileOrNull(app.io, app.gpa, path);
+    if (path.len == 0 or data == null) {
+        app.setMsg("msg_log_open_failed", .{});
+        return;
+    }
+    app.gpa.free(data.?);
+    const ok = if (comptime os == .windows)
+        runCommandOk(app, &.{ "cmd", "/c", "start", "", path })
+    else
+        runCommandOk(app, &.{ "xdg-open", path });
+    if (ok) {
+        app.setMsg("msg_log_open_ok", .{});
+    } else {
+        app.setMsg("msg_log_open_failed", .{});
+    }
+}
+
+/// Caminho absoluto do backup de scans de hoje
+/// (ex. ~/.config/xemonitor/xemonitor-scans-2026-09-10.log).
+fn scansLogAbsolutePath(app: *App, buf: *[1024]u8) []const u8 {
+    var name_buf: [40]u8 = undefined;
+    var date_buf: [10]u8 = undefined;
+    const date = todayDateStr(app.io, &date_buf);
+    if (date.len < 10) return buf[0..0];
+    const name = std.fmt.bufPrint(&name_buf, "{s}{s}.log", .{ paths.SCANS_LOG_PREFIX, date }) catch return buf[0..0];
+    return std.fmt.bufPrint(buf, "{s}{c}{s}", .{ gui_cfg_dir.path, paths.sep, name }) catch buf[0..0];
+}
+
+fn openScansLogFile(app: *App) void {
+    var pbuf: [1024]u8 = undefined;
+    const path = scansLogAbsolutePath(app, &pbuf);
+    if (path.len == 0) {
+        app.setMsg("msg_scans_open_failed", .{});
+        return;
+    }
+    const ok = if (comptime os == .windows)
+        runCommandOk(app, &.{ "cmd", "/c", "start", "", path })
+    else
+        runCommandOk(app, &.{ "xdg-open", path });
+    if (ok) {
+        app.setMsg("msg_scans_open_ok", .{});
+    } else {
+        app.setMsg("msg_scans_open_failed", .{});
+    }
+}
+
 fn renderLogWindow(app: *App) void {
     const os_win = dvui.osWindow(
         @src(),
@@ -1717,7 +1931,11 @@ fn renderLogWindow(app: *App) void {
     );
     defer os_win.deinit();
 
+    var head = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+    defer head.deinit();
     dvui.labelNoFmt(@src(), i18n.t("log_heading"), .{}, .{ .font = .theme(.heading) });
+    dvui.labelNoFmt(@src(), "", .{}, .{ .expand = .horizontal });
+    if (dvui.button(@src(), i18n.t("btn_open_log"), .{}, .{})) openDatedLogFile(app);
     var scroll = dvui.scrollArea(@src(), .{ .vertical = .auto, .horizontal = .auto, .vertical_bar = .auto, .horizontal_bar = .auto }, .{ .expand = .both, .min_size_content = .{ .w = 0, .h = 200 } });
     defer scroll.deinit();
     var box = dvui.box(@src(), .{ .dir = .vertical }, .{ .expand = .horizontal });
@@ -1906,7 +2124,15 @@ var window_open = true;
     app.client.capture_stderr = true;
     app.client.alloc = init.gpa;
     backfillLog(&app);
+    backfillScans(&app);
+    // Histórico SSE liga já na init (idempotente; reconecta com backoff) —
+    // funciona mesmo se o bridge já estiver ativo sem ter passado por startBridge.
+    startHistoryWorker(&app);
     defer app.deinit();
+
+    // Limpa clientes órfãos de sessões anteriores (ex.: xemonitor iniciado
+    // como root via sudo fora do GUI) antes de qualquer spawn/auto_start.
+    if (os == .linux) killStaleClient(&app);
 
     var tray: tray_mod.Tray = .{};
     var tray_active = false;

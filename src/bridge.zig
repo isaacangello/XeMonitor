@@ -104,7 +104,7 @@ fn autoDetectSerial(io: std.Io, alloc: std.mem.Allocator) []u8 {
             if (entry.kind != .sym_link) continue;
             const name = entry.name;
             const full = std.fmt.allocPrint(alloc, "{s}/{s}", .{ BY_ID, name }) catch continue;
-            const fd = c.open(full.ptr, c.O_RDWR | c.O_NOCTTY);
+            const fd = c.open(full.ptr, c.O_RDWR | c.O_NOCTTY | c.O_NONBLOCK);
             if (fd >= 0) {
                 _ = c.close(fd);
                 return full;
@@ -123,7 +123,7 @@ fn autoDetectSerial(io: std.Io, alloc: std.mem.Allocator) []u8 {
         const ok = std.mem.startsWith(u8, n, "ttyUSB") or std.mem.startsWith(u8, n, "ttyACM");
         if (!ok) continue;
         const full = std.fmt.allocPrint(alloc, "/dev/{s}", .{n}) catch continue;
-        const fd = c.open(full.ptr, c.O_RDWR | c.O_NOCTTY);
+        const fd = c.open(full.ptr, c.O_RDWR | c.O_NOCTTY | c.O_NONBLOCK);
         if (fd >= 0) {
             _ = c.close(fd);
             return full;
@@ -364,13 +364,20 @@ fn configureSerial(fd: c_int) void {
 
 fn openSerial() c_int {
     std.debug.print("[bridge] opening {s}...\n", .{serial_device});
-    const fd = c.open(serial_device.ptr, c.O_RDWR | c.O_NOCTTY);
+    // Abre com O_NONBLOCK para nao travar no carrier detect (DCD): o ch341 nao
+    // afirma DCD quando o Honeywell 1900 esta em silencio, e um open() bloqueante
+    // fica eternamente em tty_port_block_til_ready (a serial nunca abre e o
+    // DTR+RTS nem chega a ser ligado -> scanner mudo). O O_NONBLOCK e limpo logo
+    // apos o termios para o read() voltar a usar VMIN/VTIME normalmente.
+    const fd = c.open(serial_device.ptr, c.O_RDWR | c.O_NOCTTY | c.O_NONBLOCK);
     if (fd < 0) {
         std.debug.print("[bridge] failed to open serial\n", .{});
         return -1;
     }
     std.debug.print("[bridge] configuring serial {d} 8N1...\n", .{serial_baud});
     configureSerial(fd);
+    const fl = c.fcntl(fd, c.F_GETFL);
+    if (fl >= 0) _ = c.fcntl(fd, c.F_SETFL, fl & ~@as(c_int, c.O_NONBLOCK));
     return fd;
 }
 
@@ -398,11 +405,15 @@ fn serialReaderTask(state: *SharedState) void {
                 break;
             }
             if (n == 0) {
-                // VTIME expirou sem dados: re-afirma DTR+RTS para manter o
-                // scanner vivo durante pausas (evita que entre em sleep mode).
-                const dtr_rts: c_int = TIOCM_DTR | TIOCM_RTS;
-                _ = c.ioctl(fd, TIOCM_BIS, &dtr_rts);
-                if (verbose) std.debug.print("[bridge] DTR+RTS keep-alive\n", .{});
+                // VTIME expirou sem dados. DTR+RTS ja foram afirmados no
+                // configureSerial e permanecem firmes (modem lines sao
+                // "sticky" no kernel); reafirmar via TIOCMBIS aqui perturba o
+                // ch341 e ENGOLIA o frame que chega logo apos o ioctl (loss
+                // intermitente: 0 bytes ou 1 byte lixo por scan). O autosuspend
+                // do CH340 ja e desativado via udev rule
+                // (99-xemonitor-autosuspend.rules), entao o keep-alive e
+                // obsoleto. Validado 2026-09-10 (strace: sem keep-alive, scans
+                // em pausas >5s leem 100% limpo).
                 continue;
             }
             const data = buf[0..@as(usize, @intCast(n))];

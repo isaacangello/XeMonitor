@@ -11,6 +11,8 @@ const builtin = @import("builtin");
 pub const APP_DIR_NAME = "xemonitor";
 /// Prefixo do arquivo de log datado: xemonitor-YYYY-MM-DD.log
 pub const LOG_PREFIX = "xemonitor-";
+/// Prefixo do backup de scans datado via GUI: xemonitor-scans-YYYY-MM-DD.log
+pub const SCANS_LOG_PREFIX = "xemonitor-scans-";
 pub const GUI_CONFIG_FILE = "xemonitor-gui.conf";
 pub const CLIENT_PID_FILE = "xemonitor.pid";
 pub const GUI_PID_FILE = "xemonitor-gui.pid";
