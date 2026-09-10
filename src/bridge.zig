@@ -322,8 +322,8 @@ fn configureSerial(fd: c_int) void {
         t.c_lflag &= ~mask;
     }
 
-    t.c_cc[c.VMIN] = 1;
-    t.c_cc[c.VTIME] = 0;
+    t.c_cc[c.VMIN]  = 0;  // retorna ao expirar VTIME mesmo sem dados
+    t.c_cc[c.VTIME] = 50; // 50 × 100ms = 5s de silêncio → n=0 → keep-alive DTR/RTS
 
     _ = c.cfsetispeed(&t, serial_baud);
     _ = c.cfsetospeed(&t, serial_baud);
@@ -384,13 +384,26 @@ fn serialReaderTask(state: *SharedState) void {
         }
 
         var buf: [4096]u8 = undefined;
+        // Acumula bytes até \r ou \n antes de atualizar o SharedState.
+        // Garante que state.update() receba sempre um barcode completo,
+        // mesmo que read() retorne chunks parciais (comum com adaptadores USB).
+        var line_buf: [CODE_MAX + 2]u8 = undefined;
+        var line_len: usize = 0;
         var failed = false;
         while (true) {
             const n = c.read(fd, &buf, buf.len);
-            if (n <= 0) {
-                std.debug.print("[bridge] serial read error or end of stream\n", .{});
+            if (n < 0) {
+                std.debug.print("[bridge] serial read error\n", .{});
                 failed = true;
                 break;
+            }
+            if (n == 0) {
+                // VTIME expirou sem dados: re-afirma DTR+RTS para manter o
+                // scanner vivo durante pausas (evita que entre em sleep mode).
+                const dtr_rts: c_int = TIOCM_DTR | TIOCM_RTS;
+                _ = c.ioctl(fd, TIOCM_BIS, &dtr_rts);
+                if (verbose) std.debug.print("[bridge] DTR+RTS keep-alive\n", .{});
+                continue;
             }
             const data = buf[0..@as(usize, @intCast(n))];
             if (verbose) {
@@ -401,7 +414,19 @@ fn serialReaderTask(state: *SharedState) void {
                 const hex = hexDump(data, &hex_buf);
                 std.debug.print("[bridge] serial read hex: {s}\n", .{hex});
             }
-            state.update(data);
+            for (data) |b| {
+                if (b == '\r' or b == '\n') {
+                    if (line_len > 0) {
+                        line_buf[line_len] = '\r';
+                        line_buf[line_len + 1] = '\n';
+                        state.update(line_buf[0 .. line_len + 2]);
+                        line_len = 0;
+                    }
+                } else if (line_len < CODE_MAX) {
+                    line_buf[line_len] = b;
+                    line_len += 1;
+                }
+            }
         }
         _ = c.close(fd);
         if (failed) sleepNs(500 * std.time.ns_per_ms);
@@ -632,13 +657,10 @@ fn handleHttpConnection(fd: c_int, state: *SharedState) void {
     }
 }
 
-fn runHttpMode(host: []const u8, port: u16, fake_scan_ms: ?u64) !void {
-    var state = SharedState{};
-    try spawnSourceTasks(&state, fake_scan_ms);
-
-    // Tenta bind na porta solicitada; se ocupada (EADDRINUSE), tenta a
-    // proxima ate HTTP_PORT_FALLBACK_END. A porta efetiva e logada e fica
-    // disponivel via --print-http-port.
+/// Loop de accept HTTP/SSE usando um SharedState já existente.
+/// Usado tanto pelo modo HTTP standalone (runHttpMode) como pelo modo
+/// híbrido (onde o estado é compartilhado com o lado TCP).
+fn httpAcceptLoop(host: []const u8, port: u16, state: *SharedState) !void {
     var p: u16 = port;
     var fd: c_int = -1;
     while (p <= HTTP_PORT_FALLBACK_END) : (p += 1) {
@@ -667,14 +689,26 @@ fn runHttpMode(host: []const u8, port: u16, fake_scan_ms: ?u64) !void {
             sleepNs(std.time.ns_per_s);
             continue;
         }
-
-        const thread = std.Thread.spawn(.{}, handleHttpConnection, .{ client, &state }) catch |err| {
+        const thread = std.Thread.spawn(.{}, handleHttpConnection, .{ client, state }) catch |err| {
             std.debug.print("[bridge] failed to spawn handler: {}\n", .{err});
             _ = c.close(client);
             continue;
         };
         thread.detach();
     }
+}
+
+/// Wrapper para std.Thread.spawn no modo híbrido.
+fn httpAcceptLoopThread(port: u16, state: *SharedState) void {
+    httpAcceptLoop("0.0.0.0", port, state) catch |err| {
+        std.debug.print("[bridge] HTTP thread failed: {}\n", .{err});
+    };
+}
+
+fn runHttpMode(host: []const u8, port: u16, fake_scan_ms: ?u64) !void {
+    var state = SharedState{};
+    try spawnSourceTasks(&state, fake_scan_ms);
+    try httpAcceptLoop(host, port, &state);
 }
 
 // ---- CLI ----
@@ -891,22 +925,43 @@ pub fn main(init: std.process.Init) !u8 {
             return 1;
         };
     } else if (http_enabled) {
-        // Modo hibrido: TCP (cliente xemonitor) + HTTP/SSE (GUI history) no
-        // mesmo processo. HTTP roda em thread separada.
-        std.debug.print("[bridge] hybrid mode: TCP 9000 + HTTP {d}\n", .{http_port});
-        const http_thread = std.Thread.spawn(.{}, runHttpInThread, .{ http_port, fake_scan_ms }) catch |err| {
+        // Modo híbrido: TCP + HTTP com UM único leitor serial compartilhado.
+        // Chamar spawnSourceTasks duas vezes (ex: runHttpInThread + runTcpMode)
+        // cria dois serialReaderTask competindo pelos bytes da serial, causando
+        // scans perdidos ~50% do tempo.
+        std.debug.print("[bridge] hybrid mode: TCP {d} + HTTP {d}\n", .{ tcp_port, http_port });
+        var state = SharedState{};
+        try spawnSourceTasks(&state, fake_scan_ms);
+
+        const http_thread = std.Thread.spawn(.{}, httpAcceptLoopThread, .{ http_port, &state }) catch |err| {
             std.debug.print("[bridge] failed to start HTTP thread: {}\n", .{err});
             return 1;
         };
         http_thread.detach();
-        // Pequeno delay para o HTTP bindar antes da GUI conectar (evita
-        // race quando GUI faz auto_start e conecta SSE imediatamente).
+        // Pequeno delay para o HTTP bindar antes da GUI conectar.
         sleepNs(100 * std.time.ns_per_ms);
         if (print_http_port_only) {
             std.debug.print("{d}\n", .{http_port_effective});
             return 0;
         }
-        try runTcpMode(tcp_port, fake_scan_ms);
+        const tcp_fd = try listenOn("0.0.0.0", tcp_port);
+        defer _ = c.close(tcp_fd);
+        std.debug.print("[bridge] starting TCP server on 0.0.0.0:{d}...\n", .{tcp_port});
+        while (true) {
+            const client = c.accept(tcp_fd, null, null);
+            if (client < 0) {
+                std.debug.print("[bridge] accept error\n", .{});
+                sleepNs(std.time.ns_per_s);
+                continue;
+            }
+            std.debug.print("[bridge] client connected\n", .{});
+            const thread = std.Thread.spawn(.{}, handleTcpConnection, .{ client, &state }) catch |err| {
+                std.debug.print("[bridge] failed to spawn handler: {}\n", .{err});
+                _ = c.close(client);
+                continue;
+            };
+            thread.detach();
+        }
     } else {
         if (print_http_port_only) {
             // Sem HTTP habilitado, reporta a porta padrao (nao subiu servidor).
@@ -919,13 +974,6 @@ pub fn main(init: std.process.Init) !u8 {
     return 0;
 }
 
-/// Wrapper para spawn da thread HTTP (std.Thread.spawn exige fn com retorno
-/// void ou noreturn). Ignora erros de bindamento no log.
-fn runHttpInThread(port: u16, fake_scan_ms: ?u64) void {
-    runHttpMode("0.0.0.0", port, fake_scan_ms) catch |err| {
-        std.debug.print("[bridge] HTTP thread failed: {}\n", .{err});
-    };
-}
 
 // ---- Tests ----
 

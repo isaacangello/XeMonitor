@@ -236,6 +236,39 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
   roda em Arch/CachyOS (glibc) **e** Alpine (musl). Confirmado via `readelf`
   (sem dynamic interpreter).
 
+## 26. Bridge Linux — dois `serialReaderTask` em modo `--http` (hybrid mode)
+- **Sintoma**: leituras intermitentes no Linux com `--http` ativo (o modo padrão
+  do `run_xemonitor.sh`); aproximadamente 50% dos scans são perdidos — às vezes
+  lê, às vezes não lê, independentemente de pausa entre leituras.
+- **Causa raiz**: o modo híbrido (`--http`) chamava `spawnSourceTasks` **duas
+  vezes** — uma em `runHttpMode` (thread HTTP) e outra em `runTcpMode` (main
+  loop). Os dois `serialReaderTask` abriam `/dev/ttyUSB0` simultaneamente e
+  competiam pelos bytes. Os bytes de cada scan iam ora para o estado HTTP, ora
+  para o estado TCP; o cliente `xemonitor --tcp` só enxerga o estado TCP, logo
+  ~50% dos scans eram ignorados.
+- **Fix (v0.8.11+, 2026-09-09)**: extraída `httpAcceptLoop(host, port, *SharedState)`
+  de `runHttpMode`. No modo híbrido, um único `SharedState` e um único
+  `spawnSourceTasks` são usados; TCP e HTTP compartilham o mesmo leitor serial.
+  Arquivos: `src/bridge.zig` — funções `httpAcceptLoop`, `httpAcceptLoopThread`,
+  bloco `} else if (http_enabled) {` em `main()`.
+- **Anti-regra**: nunca chamar `runHttpMode` e `runTcpMode` de forma independente
+  no modo híbrido; cada um cria seu próprio `SharedState` + serial reader.
+
+## 27. GUI Linux — oscilação de status do bridge (spawn por frame)
+- **Sintoma**: o status do bridge na linha 2 do painel Server oscila/pisca a
+  cada frame mesmo com o bridge estável.
+- **Causa raiz**: a linha 2 ("Bridge: X | Histórico: Y") calculava `bridge_status`
+  **inline no render loop**, chamando `runSystemdStatus` (que faz `spawn` de
+  `systemctl is-active`) em todo frame. Como o spawn tem latência variável, o
+  resultado oscilava entre "Rodando" e "Parado".
+- **Fix (v0.8.11+, 2026-09-09)**: extraída `computeShortBridgeStatus`. O status
+  curto é cacheado em `bridge_status_buf`/`bridge_status_len` dentro de
+  `refreshStatus` (throttle 1 s). O render loop usa apenas o cache.
+  Arquivo: `src/gui.zig` — struct `App`, `computeShortBridgeStatus`, `refreshStatus`,
+  `renderServerPanel`.
+- **Anti-regra**: nunca chamar `runSystemdStatus` ou qualquer `spawn` diretamente
+  dentro do render loop; usar `refreshStatus` (throttled) ou thread de fundo.
+
 ---
 
 ## Anti-regras rápidas (resumo executivo)

@@ -92,6 +92,20 @@ in_group_serial() {
     id -nG | tr ' ' '\n' | grep -qE "^(uucp|dialout)$"
 }
 
+disable_usb_autosuspend() {
+    local dev="$1"
+    local syspath
+    syspath=$(udevadm info -q path -n "$dev" 2>/dev/null) || return 0
+    # Sobe 3 níveis: ttyUSBx → usb_interface → usb_device
+    local usb_dev
+    usb_dev=$(dirname "$(dirname "/sys$syspath")")
+    if [ -f "$usb_dev/power/control" ]; then
+        echo "on" > "$usb_dev/power/control"              2>/dev/null || true
+        echo "-1" > "$usb_dev/power/autosuspend_delay_ms" 2>/dev/null || true
+        echo "[INFO] USB autosuspend desabilitado em $usb_dev"
+    fi
+}
+
 require_sudo() {
     # Se nao houver sudo sem senha, falha com instrucao clara.
     if ! sudo -n true 2>/dev/null; then
@@ -111,6 +125,8 @@ if ! test_dtr_rts "$DETECTED_DEVICE"; then
     echo "[AVISO] DTR/RTS NÃO suportado pelo kernel driver (ch341)."
     echo "         Scanner físico NÃO vai transmitir. Use --fake-scan para testar."
 fi
+
+disable_usb_autosuspend "$DETECTED_DEVICE"
 
 if [ "$USER_BRIDGE" = "0" ] && [ "$SYSTEM_MODE" = "0" ] && ! in_group_serial; then
     echo "[ERRO] Você não está em uucp/dialout. Sem isso o bridge não abre a serial."

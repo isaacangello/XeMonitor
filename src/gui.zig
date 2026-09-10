@@ -520,6 +520,7 @@ const App = struct {
     history_status_buf: [256]u8 = undefined,
     history_status_len: usize = 0,
     bridge_status_buf: [256]u8 = undefined,
+    bridge_status_len: usize = 0,
 
     last_scan_time_ns: i128 = 0,
     watchdog_state: u8 = 0,
@@ -1373,16 +1374,52 @@ fn computeBridgeStatus(app: *App) []const u8 {
     return i18n.t("status_mode_unknown");
 }
 
+/// Status curto do bridge para a Linha 2 do painel (ex: "Rodando" / "Parado").
+/// Escreve em bridge_status_buf quando usa formatInto (subprocess_short).
+/// Chamado apenas por refreshStatus (throttle 1s) — nunca direto do render loop.
+fn computeShortBridgeStatus(app: *App) []const u8 {
+    if (isMode(app, "subprocess"))
+        return if (app.bridge.running.load(.seq_cst))
+            i18n.formatInto(&app.bridge_status_buf, i18n.t("status_subprocess_short"), .{app.bridge_port})
+        else
+            i18n.t("status_stopped");
+    if (isMode(app, "wsl") and os == .windows)
+        return if (portIsOpen(app.io, app.cfg.tcp_host, app.cfg.tcp_port))
+            i18n.t("status_wsl_running")
+        else
+            i18n.t("status_wsl_stopped");
+    if (isMode(app, "systemd-user") and os == .linux)
+        return if (runSystemdStatus(app, "--user"))
+            i18n.t("status_running")
+        else
+            i18n.t("status_stopped");
+    if (isMode(app, "systemd-system") and os == .linux)
+        return if (runSystemdStatus(app, ""))
+            i18n.t("status_running")
+        else
+            i18n.t("status_stopped");
+    return i18n.t("status_mode_unknown");
+}
+
 fn refreshStatus(app: *App) void {
     const now = std.Io.Timestamp.now(app.io, .awake).nanoseconds;
     if (now - app.status_at < std.time.ns_per_ms * 1000) return;
     app.status_at = now;
+
+    // Linha 1: status verbose (pode chamar systemctl — throttlado aqui)
     const s = computeBridgeStatus(app);
     app.status_len = @min(s.len, app.status_buf.len - 1);
     // computeBridgeStatus pode gravar direto em status_buf (modo subprocesso);
     // nesse caso o conteudo ja esta no buffer e o memcpy seria um alias.
-    if (s.len > 0 and @intFromPtr(s.ptr) == @intFromPtr(&app.status_buf)) return;
-    @memcpy(app.status_buf[0..app.status_len], s[0..app.status_len]);
+    if (s.len == 0 or @intFromPtr(s.ptr) != @intFromPtr(&app.status_buf))
+        @memcpy(app.status_buf[0..app.status_len], s[0..app.status_len]);
+
+    // Linha 2: bridge status curto — cacheado para evitar spawn de systemctl
+    // a cada frame do render loop (causa oscilação/flicker).
+    const b = computeShortBridgeStatus(app);
+    app.bridge_status_len = @min(b.len, app.bridge_status_buf.len - 1);
+    if (b.len == 0 or @intFromPtr(b.ptr) != @intFromPtr(&app.bridge_status_buf))
+        @memcpy(app.bridge_status_buf[0..app.bridge_status_len], b[0..app.bridge_status_len]);
 }
 
 fn killStaleClient(app: *App) void {
@@ -1459,29 +1496,9 @@ fn renderServerPanel(app: *App) void {
     dvui.labelNoFmt(@src(), app.status_buf[0..app.status_len], .{}, .{});
 
     // Linha 2: Bridge: <status>  |  Histórico: <status SSE>
-    // (buffers separados para evitar a oscilação/flicker)
-    const bridge_status = if (isMode(app, "subprocess"))
-        if (app.bridge.running.load(.seq_cst))
-            i18n.formatInto(&app.bridge_status_buf, i18n.t("status_subprocess_short"), .{app.bridge_port})
-        else
-            i18n.t("status_stopped")
-    else if (isMode(app, "wsl") and os == .windows)
-        if (portIsOpen(app.io, app.cfg.tcp_host, app.cfg.tcp_port))
-            i18n.t("status_wsl_running")
-        else
-            i18n.t("status_wsl_stopped")
-    else if (isMode(app, "systemd-user") and os == .linux)
-        if (runSystemdStatus(app, "--user"))
-            i18n.t("status_running")
-        else
-            i18n.t("status_stopped")
-    else if (isMode(app, "systemd-system") and os == .linux)
-        if (runSystemdStatus(app, ""))
-            i18n.t("status_running")
-        else
-            i18n.t("status_stopped")
-    else
-        i18n.t("status_mode_unknown");
+    // bridge_status_buf é atualizado por refreshStatus (throttle 1s) para
+    // evitar spawn de systemctl a cada frame (causa oscilação).
+    const bridge_status = app.bridge_status_buf[0..app.bridge_status_len];
 
     const history_connected = app.history_connected.load(.seq_cst);
     const history_connecting = app.history_connecting.load(.seq_cst);
@@ -1489,8 +1506,6 @@ fn renderServerPanel(app: *App) void {
         i18n.formatInto(&app.history_status_buf, i18n.t("status_history_connected"), .{app.history_port})
     else if (history_connecting)
         i18n.formatInto(&app.history_status_buf, i18n.t("status_history_connecting"), .{app.history_port})
-    else if (app.history_worker_running.load(.seq_cst))
-        i18n.t("status_history_disconnected")
     else
         i18n.t("status_history_disconnected");
 

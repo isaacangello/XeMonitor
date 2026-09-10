@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.8.11] — 2026-09-09
+
+### Fixed
+
+- **Bridge Linux — leitor serial duplicado no modo híbrido (`--http`)** — o
+  modo híbrido chamava `spawnSourceTasks` duas vezes (HTTP thread + TCP main),
+  criando dois `serialReaderTask` competindo pelos bytes do `/dev/ttyUSB0` e
+  perdendo ~50% dos scans. Agora TCP e HTTP compartilham um único
+  `SharedState` + um único leitor. Validado: TCP e `/stream` recebem ambos
+  **100%** dos eventos em teste fake-scan.
+- **Bridge Linux — reads parciais/keep-alive DTR+RTS** — `serialReaderTask`
+  acumula bytes até `\r`/`\n` (brides de reads parciais de adaptadores USB);
+  VMIN=0/VTIME=50 e re-assert de DTR+RTS a cada silêncio de 5 s mantém o
+  scanner vivo durante pausas (evita sleep mode do CH340).
+- **GUI Linux — oscilação do status do bridge** — o status curto da Linha 2
+  do painel Server chamava `systemctl is-active` (spawn) a cada frame do
+  render loop, causando flicker. Extraída `computeShortBridgeStatus`, cacheada
+  em `refreshStatus` (throttle 1 s).
+
+### Changed
+
+- **`run_xemonitor.sh`** — novo helper `disable_usb_autosuspend` desativa
+  autosuspend do USB do scanner no boot do script (best-effort, sem erro se o
+  usuário não tiver permissão).
+- **Versão** — `VERSION` e metadados do PE (`assets/xemonitor.rc`, há muito
+  presos em 0.8.2) sincronizados em **0.8.11**.
+
 ## [0.8.10] — 2026-09-06
 
 ### Changed
