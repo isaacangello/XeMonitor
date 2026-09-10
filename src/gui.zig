@@ -1487,13 +1487,38 @@ fn stopClient(app: *App) void {
 // ---------- UI ----------
 
 fn renderServerPanel(app: *App) void {
-    dvui.labelNoFmt(@src(), i18n.t("panel_server"), .{}, .{ .font = .theme(.heading) });
+    // Linha 0: "Server (bridge)" + botões (Start/Stop/Repair) + modo e porta
+    // na mesma linha. Bloco explícito para o box fechar (deinit) antes dos
+    // blocos seguintes virarem irmãos (sem isso o dvui aninha e tudo sai
+    // empacotado numa linha só).
+    {
+        var head_row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 2, .h = 2 } });
+        defer head_row.deinit();
+        dvui.labelNoFmt(@src(), i18n.t("panel_server"), .{}, .{ .font = .theme(.heading) });
+        dvui.labelNoFmt(@src(), "   ", .{}, .{});
+        if (dvui.button(@src(), i18n.t("btn_start"), .{}, .{})) startBridge(app);
+        if (dvui.button(@src(), i18n.t("btn_stop"), .{}, .{})) stopBridge(app);
+        if (isMode(app, "wsl") and os == .windows) {
+            dvui.labelNoFmt(@src(), "  ", .{}, .{});
+            const repairing = app.repair_busy.load(.seq_cst);
+            const repair_color: ?dvui.Color = if (repairing) dvui.Color.gray else null;
+            if (dvui.button(@src(), i18n.t("btn_repair"), .{}, .{ .color_text = repair_color })) {
+                if (!repairing) startRepair(app);
+            }
+        }
+        dvui.labelNoFmt(@src(), i18n.t("label_mode"), .{}, .{});
+        dvui.labelNoFmt(@src(), app.cfg.server_mode, .{}, .{});
+        dvui.labelNoFmt(@src(), i18n.t("label_port_cfg"), .{}, .{});
+        dvui.labelNoFmt(@src(), app.port_buf[0..portBufLen(app)], .{}, .{});
+    }
 
     // Linha 1: status do bridge (modo principal, atualizado por refreshStatus)
-    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
-    defer row.deinit();
-    dvui.labelNoFmt(@src(), i18n.t("label_status"), .{}, .{});
-    dvui.labelNoFmt(@src(), app.status_buf[0..app.status_len], .{}, .{});
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 2, .h = 2 } });
+        defer row.deinit();
+        dvui.labelNoFmt(@src(), i18n.t("label_status"), .{}, .{});
+        dvui.labelNoFmt(@src(), app.status_buf[0..app.status_len], .{}, .{});
+    }
 
     // Linha 2: Bridge: <status>  |  Histórico: <status SSE>
     // bridge_status_buf é atualizado por refreshStatus (throttle 1s) para
@@ -1509,42 +1534,26 @@ fn renderServerPanel(app: *App) void {
     else
         i18n.t("status_history_disconnected");
 
-    var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 2, .h = 2 } });
-    defer row2.deinit();
-    dvui.labelNoFmt(@src(), "Bridge:", .{}, .{ .color_text = dvui.Color.gray });
-    const bridge_ok = std.mem.indexOf(u8, bridge_status, i18n.t("status_running")) != null or
-        std.mem.indexOf(u8, bridge_status, i18n.t("status_wsl_running")) != null;
-    const bridge_color: dvui.Color = if (bridge_ok)
-        dvui.Color{ .r = 0x4c, .g = 0xb3, .b = 0x4c, .a = 255 }
-    else
-        dvui.Color{ .r = 0xb3, .g = 0x4d, .b = 0x4d, .a = 255 };
-    dvui.labelNoFmt(@src(), bridge_status, .{}, .{ .color_text = bridge_color });
-    dvui.labelNoFmt(@src(), " | Histórico:", .{}, .{ .color_text = dvui.Color.gray });
-    const hist_color: dvui.Color = if (history_connected)
-        dvui.Color{ .r = 0x4c, .g = 0xb3, .b = 0x4c, .a = 255 }
-    else if (history_connecting)
-        dvui.Color{ .r = 0xe6, .g = 0x99, .b = 0x1a, .a = 255 }
-    else
-        dvui.Color{ .r = 0xb3, .g = 0x4d, .b = 0x4d, .a = 255 };
-    dvui.labelNoFmt(@src(), history_status_val, .{}, .{ .color_text = hist_color });
-
-    // Linha 3: botões + mode + porta
-    var row3 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 4, .h = 4 } });
-    defer row3.deinit();
-    if (dvui.button(@src(), i18n.t("btn_start"), .{}, .{})) startBridge(app);
-    if (dvui.button(@src(), i18n.t("btn_stop"), .{}, .{})) stopBridge(app);
-    if (isMode(app, "wsl") and os == .windows) {
-        dvui.labelNoFmt(@src(), "  ", .{}, .{});
-        const repairing = app.repair_busy.load(.seq_cst);
-        const repair_color: ?dvui.Color = if (repairing) dvui.Color.gray else null;
-        if (dvui.button(@src(), i18n.t("btn_repair"), .{}, .{ .color_text = repair_color })) {
-            if (!repairing) startRepair(app);
-        }
+    {
+        var row2 = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .margin = .{ .y = 2, .h = 2 } });
+        defer row2.deinit();
+        dvui.labelNoFmt(@src(), "Bridge:", .{}, .{ .color_text = dvui.Color.gray });
+        const bridge_ok = std.mem.indexOf(u8, bridge_status, i18n.t("status_running")) != null or
+            std.mem.indexOf(u8, bridge_status, i18n.t("status_wsl_running")) != null;
+        const bridge_color: dvui.Color = if (bridge_ok)
+            dvui.Color{ .r = 0x4c, .g = 0xb3, .b = 0x4c, .a = 255 }
+        else
+            dvui.Color{ .r = 0xb3, .g = 0x4d, .b = 0x4d, .a = 255 };
+        dvui.labelNoFmt(@src(), bridge_status, .{}, .{ .color_text = bridge_color });
+        dvui.labelNoFmt(@src(), " | Histórico:", .{}, .{ .color_text = dvui.Color.gray });
+        const hist_color: dvui.Color = if (history_connected)
+            dvui.Color{ .r = 0x4c, .g = 0xb3, .b = 0x4c, .a = 255 }
+        else if (history_connecting)
+            dvui.Color{ .r = 0xe6, .g = 0x99, .b = 0x1a, .a = 255 }
+        else
+            dvui.Color{ .r = 0xb3, .g = 0x4d, .b = 0x4d, .a = 255 };
+        dvui.labelNoFmt(@src(), history_status_val, .{}, .{ .color_text = hist_color });
     }
-    dvui.labelNoFmt(@src(), i18n.t("label_mode"), .{}, .{});
-    dvui.labelNoFmt(@src(), app.cfg.server_mode, .{}, .{});
-    dvui.labelNoFmt(@src(), i18n.t("label_port_cfg"), .{}, .{});
-    dvui.labelNoFmt(@src(), app.port_buf[0..portBufLen(app)], .{}, .{});
 }
 
 fn portBufLen(app: *App) usize {
