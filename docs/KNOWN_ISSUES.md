@@ -446,3 +446,28 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
   **DTR+RTS ativos** (ver seção 5b).
 - **Refs**: diagnóstico empírico 2026-09-10 (threads `/proc`, captura crua
   `/tmp/raw_idle.bin`, journal da unit); fix em `src/bridge.zig`.
+
+## 35. GUI Linux — worker SSE travado em `poll` (painel/histórico/backup congelados)
+- **Sintoma**: a GUI fica "cega" para o histórico/bridge: painel Server não
+  atualiza, scans continuam sendo injetados pelo cliente (log mostra
+  `injected`), mas o histórico e o backup `xemonitor-scans-*.log` **nunca**
+  recebem novas entradas. O `/stream` do bridge funciona (curl watcher
+  recebe os eventos SSE normalmente).
+- **Causa raiz**: o worker SSE da GUI (`historyWorker`) está **conectado**
+  (fd ESTAB, poll no epoll) mas **não faz `read`/`recvmsg`** no socket — fica
+  parado em `poll` perpetuamente. Diagnóstico (v0.8.15, CachyOS 2026-09-10):
+  `strace -f -p <gui>` mostrou **zero syscalls** no fd 28 (SSE) durante 32s,
+  único tid do worker (`84992`) preso em `poll`; fd 3 = `~/.config/xemonitor`,
+  conexão :9001 ESTAB. Não é bug do binário (release reinstalado idem); é um
+  estado de runtime da instância (a GUI afetada estava de pé há horas).
+- **Fix**: reiniciar a GUI (`kill -9` da instância + `run_xemonitor.sh`, ou
+  fechar/reabrir via bandeja). Instância nova grava histórico + backup
+  normalmente. Aplicado em 2026-09-10 e validado com scan físico.
+- **Workaround sugerido (não aprovado)**: watchdog no `historyWorker` — se
+  conectado mas sem entregar eventos por N segundos, resetar/reconnectar o
+  SSE. Não implementado.
+- **Anti-regra**: não confundir com bug do release — verificar antes se a GUI
+  é uma instância antiga; o sintoma "injecta mas não grava/atualiza" com
+  conexão SSE ESTAB e thread em `poll` aponta para estado preso, não feature
+  ausente.
+- **Refs**: diagnóstico 2026-09-10 (`/tmp/gui_strace3.log`, session CachyOS).
