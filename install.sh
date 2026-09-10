@@ -45,7 +45,7 @@
 set -euo pipefail
 
 REPO="isaacangello/XeMonitor"
-INSTALL_VERSION="1.5.0"
+INSTALL_VERSION="1.6.0"
 TARBALL="xemonitor-linux-x86_64.tar.gz"
 VERSION="${XEMONITOR_VERSION:-latest}"
 PREFIX="/usr/local"
@@ -65,7 +65,7 @@ YDOTOOL_SESSION="wayland"
 
 usage() {
     cat <<'HELP'
-XeMonitor - instalador Linux (v1.5.0)
+XeMonitor - instalador Linux (v1.6.0)
 
 Uso:
   curl -LsSf https://raw.githubusercontent.com/isaacangello/XeMonitor/main/install.sh | bash
@@ -371,6 +371,18 @@ if [ "$LIBC" = "glibc" ] && [ "$SESSION_TYPE" != "tty" ] && [ "$BRIDGE_ONLY" = "
 fi
 log "GUI disponivel: ${GUI_AVAILABLE} (libc=${LIBC} sessao=${SESSION_TYPE})"
 
+# Patch v0.8.14 (KNOWN_ISSUES #32): sessao tty/SSH -> GUI nem e instalado e
+# o install "sucede" sem nada subir no login. Aviso destacado em vez de
+# falha silenciosa.
+if [ "$GUI_AVAILABLE" = "0" ] && [ "$BRIDGE_ONLY" = "0" ] && [ "$CLIENT_ONLY" = "0" ]; then
+    attention \
+        "Sessao detectada: ${SESSION_TYPE} (libc: ${LIBC})." \
+        "O GUI NAO sera instalado (requer sessao grafica + glibc)." \
+        "Sem GUI nao ha autostart: o bridge nao sobe no login." \
+        "Rode o instalador DENTRO da sessao grafica (terminal local, nao SSH/tty)." \
+        "(modo --bridge-only e valido para headless: so o servico do bridge)."
+fi
+
 # ---------- Modo do servico/unit do bridge ----------
 # Paradigma v1.5.0: sessao grafica + systemd + usuario real -> unit de USUARIO
 # (sg, sem sudo; autostart do GUI sobe o bridge no login). --system força a unit
@@ -384,6 +396,19 @@ if [ "$SYSTEM_SERVICE" = "1" ]; then
     log "modo do bridge: ${SERVICE_MODE} (--system forcado)"
 else
     log "modo do bridge: ${SERVICE_MODE}"
+fi
+
+# Patch v0.8.14: se rodou como root SEM sudo (su / root shell), REAL_USER fica
+# vazio e o install cai em modo 'system' sem autostart/GUI — silencioso.
+if [ -n "${SUDO_USER:-}" ]; then
+    : # normal (sudo via SUDO_USER)
+elif [ "$(id -u)" -eq 0 ] && [ "$SERVICE_MODE" = "system" ] && [ "$SYSTEM_SERVICE" = "0" ] \
+    && [ "$GUI_AVAILABLE" = "1" ] && [ "$CLIENT_ONLY" = "0" ]; then
+    attention \
+        "Voce esta rodando como root SEM sudo (su/root shell):" \
+        "REAL_USER vazio -> modo 'system' forçado, sem autostart nem GUI." \
+        "Para o default (unit de USUARIO + autostart): rode via 'sudo' do" \
+        "seu usuario, ou use '-u <usuario>' (ex.: sudo -u isaacca)."
 fi
 
 if [ "$CHECK_ONLY" = "1" ]; then
@@ -518,7 +543,7 @@ fi
 # pros scripts canonicos. No release vem em dist/entrypoint/; em releases
 # antigos, fallback best-effort via raw.githubusercontent (main). A falha nao
 # e fatal (o autostart do GUI cobre o resto).
-ENTRYPOINT_NAMES="run_xemonitor run_xemonitor.sh stop_xemonitor.sh status_xemonitor.sh"
+ENTRYPOINT_NAMES="run_xemonitor run_xemonitor.sh stop_xemonitor.sh status_xemonitor.sh xemonitor-autostart"
 if [ -d "$TMP/entrypoint" ]; then
     ENTRY_OK=1
     for n in $ENTRYPOINT_NAMES; do
@@ -596,6 +621,19 @@ if [ -d /etc/udev/rules.d ]; then
         UDEV_CH340='SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", MODE="0666"'
         printf '%s\n' "$UDEV_CH340" | sudo_run tee /etc/udev/rules.d/99-ch340.rules > /dev/null
         log "regra udev do CH340 instalada (99-ch340.rules)."
+
+        # Patch v0.8.14 (KNOWN_ISSUES #31): desativa USB autosuspend do CH340
+        # no nivel do DEVICE USB (ATTR, nao ATTRS, para casar so o device).
+        # O sysfs write do run_xemonitor.sh era root-only e nunca aplicava;
+        # sem isso o CH340 dormia e o bridge lia ZERO bytes (ciclo
+        # "funciona -> quebra" apos reboot).
+        cat > "$TMP/99-xemonitor-autosuspend.rules" <<RULEEOF
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="7523", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="55d4", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="55d3", ATTR{power/control}="on", ATTR{power/autosuspend_delay_ms}="-1"
+RULEEOF
+        sudo_run install -m 0644 "$TMP/99-xemonitor-autosuspend.rules" /etc/udev/rules.d/99-xemonitor-autosuspend.rules
+        log "regra udev de autosuspend do CH340 instalada (99-xemonitor-autosuspend.rules)."
     fi
     # uinput: sempre (cliente precisa para injecao via uinput).
     UDEV_UINPUT='KERNEL=="uinput", GROUP="input", MODE="0660"'
@@ -731,14 +769,15 @@ if [ "$GUI_INSTALLED" = "1" ]; then
 Type=Application
 Name=XeMonitor
 Comment=Scanner Honeywell 1900 como teclado virtual
-Exec=${BIN_DIR}/xemonitor-gui
+Exec=${BIN_DIR}/xemonitor-autostart
 Icon=xemonitor
 Terminal=false
 Categories=Utility;
 EOF
     sudo_run install -d "${PREFIX}/share/applications"
     sudo_run install -m 0644 "$TMP/xemonitor.desktop" "${PREFIX}/share/applications/xemonitor.desktop"
-    log "desktop entry instalado."
+    log "desktop entry instalado (autostart)."
+    log "patch v0.8.14: menu e autostart usam a entrada padrao (xemonitor-autostart -> run_xemonitor start)."
 
     if [ -n "$REAL_USER" ] && [ "$REAL_USER" != "root" ] && id "$REAL_USER" >/dev/null 2>&1; then
         USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
@@ -754,13 +793,15 @@ EOF
         # Config central
         CFG_DIR_USER="$USER_HOME/.config/xemonitor"
         sudo_run mkdir -p "$CFG_DIR_USER"
-        if [ ! -f "$CFG_DIR_USER/xemonitor-gui.conf" ]; then
-            # family: o GUI reconcilia em runtime o systemd-user vs systemd-system
-            # (ver gui.zig computeShortBridgeStatus), entao o conf segue o modo
-            # escolhido pelo instalador.
-            CONF_SERVER_MODE="systemd-system"
-            [ "$SERVICE_MODE" = "user" ] && CONF_SERVER_MODE="systemd-user"
-            cat > "$TMP/xemonitor-gui.conf" <<EOF
+        # SEMPRE reescrita (patch v0.8.14): antes, o
+        # `if [ ! -f ]` deixava server_mode/bridge_path/client_path stale
+        # de instalação antiga (ex.: systemd-system quando o default virou
+        # systemd-user). family: o GUI reconcilia em runtime o systemd-user
+        # vs systemd-system (ver gui.zig computeShortBridgeStatus), entao o
+        # conf segue o modo escolhido pelo instalador.
+        CONF_SERVER_MODE="systemd-system"
+        [ "$SERVICE_MODE" = "user" ] && CONF_SERVER_MODE="systemd-user"
+        cat > "$TMP/xemonitor-gui.conf" <<EOF
 tcp_host=127.0.0.1
 tcp_port=9000
 server_mode=${CONF_SERVER_MODE}
@@ -770,8 +811,7 @@ log_path=${CFG_DIR_USER}/xemonitor.log
 auto_start=true
 tray_enabled=true
 EOF
-            sudo_run install -m 0644 "$TMP/xemonitor-gui.conf" "$CFG_DIR_USER/xemonitor-gui.conf"
-        fi
+        sudo_run install -m 0644 "$TMP/xemonitor-gui.conf" "$CFG_DIR_USER/xemonitor-gui.conf"
         sudo_run chown -R "$REAL_USER" "$CFG_DIR_USER" 2>/dev/null || true
         log "config central em ${CFG_DIR_USER}/."
     fi
@@ -785,7 +825,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=${BIN_DIR}/xemonitor-gui --no-replace
+ExecStart=${BIN_DIR}/xemonitor-autostart
 Restart=on-failure
 RestartSec=3
 
@@ -797,6 +837,7 @@ EOF
         sudo_run systemctl daemon-reload >/dev/null 2>&1 || true
         log "unit systemd de usuario disponivel (/etc/systemd/user/xemonitor-gui.service)."
         log "para usar no lugar do autostart: systemctl --user enable xemonitor-gui.service"
+        log "obs.: desative o autostart (~/.config/autostart/xemonitor.desktop) p/ nao duplicar."
     fi
 fi
 

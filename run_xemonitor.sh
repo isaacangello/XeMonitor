@@ -143,9 +143,12 @@ if [ "$REPLACE" = "1" ]; then
     # Para ambas as units de forma best-effort (user unit nao precisa de sudo).
     systemctl --user stop xemonitor-bridge 2>/dev/null || true
     sudo systemctl stop xemonitor-bridge 2>/dev/null || true
-    pkill -TERM -x xemonitor-gui xemonitor 2>/dev/null || true
+    # pkill aceita UM padrao (KNOWN_ISSUES #33): separado por processo.
+    pkill -TERM -x xemonitor-gui 2>/dev/null || true
+    pkill -TERM -x xemonitor 2>/dev/null || true
     sleep 0.5
-    pkill -KILL -x xemonitor-gui xemonitor 2>/dev/null || true
+    pkill -KILL -x xemonitor-gui 2>/dev/null || true
+    pkill -KILL -x xemonitor 2>/dev/null || true
     rm -f /run/user/$UID/xemonitor*.pid /run/xemonitor*.pid 2>/dev/null || true
 fi
 
@@ -303,9 +306,11 @@ EOF
 cleanup() {
     echo "[INFO] Limpando..."
     [ -n "${BRIDGE_PID:-}" ] && kill "$BRIDGE_PID" 2>/dev/null || true
-    pkill -TERM -x xemonitor-gui xemonitor 2>/dev/null || true
+    pkill -TERM -x xemonitor-gui 2>/dev/null || true
+    pkill -TERM -x xemonitor 2>/dev/null || true
     sleep 0.5
-    pkill -KILL -x xemonitor-gui xemonitor 2>/dev/null || true
+    pkill -KILL -x xemonitor-gui 2>/dev/null || true
+    pkill -KILL -x xemonitor 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 

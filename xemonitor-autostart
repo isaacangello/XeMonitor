@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# xemonitor-autostart — entrada padrão de AUTOSTART/ícones do XeMonitor (Linux).
+#
+# Chamado pelo ~/.config/autostart/xemonitor.desktop e pelo menu de aplicações.
+# O que ele faz:
+#   1. Garante ~/.config/xemonitor (dir central de config/log).
+#   2. Redireciona TODA a saída do entrypoint (run_xemonitor start) + do GUI
+#      para ~/.config/xemonitor/console.log — diagnóstico real do boot e
+#      stdio válido pro GUI (elimina a classe do crash da KNOWN_ISSUES #28,
+#      panic printer do Zig 0.16 com stdio fechado no autostart do DE).
+#   3. exec run_xemonitor start (a entrada padrão validada: detect_device,
+#      teste DTR/RTS, wait da porta 9000, rewrite da conf, --replace).
+#
+# Single instance: o entrypoint (--replace) + a lógica de pid do GUI impedem
+# instâncias duplicadas, então este wrapper pode rodar de novo sem medo.
+
+set -euo pipefail
+
+# Dir central de config/log (Linux): $XEMONITOR_CONFIG_DIR > XDG_CONFIG_HOME > ~/.config
+CFG_DIR="${XEMONITOR_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/xemonitor}"
+mkdir -p "$CFG_DIR"
+
+# Entrypoint instalado pelo install.sh (run_xemonitor). Busca o binário de
+# controle; em sistemas ainda não instalados (repo), o próprio diretório.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x /usr/local/bin/run_xemonitor ]; then
+    ENTRY=/usr/local/bin/run_xemonitor
+elif [ -x "$HERE/run_xemonitor" ]; then
+    ENTRY="$HERE/run_xemonitor"
+else
+    echo "[xemonitor-autostart] run_xemonitor não encontrado" >&2
+    exit 1
+fi
+
+exec "$ENTRY" start >>"$CFG_DIR/console.log" 2>&1

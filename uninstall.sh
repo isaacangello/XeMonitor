@@ -138,8 +138,8 @@ for b in xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall; do
     log "removendo ${BIN_DIR}/${b}..."
     sudo_run rm -f "${BIN_DIR}/${b}"
 done
-# Entrypoints do paradigma atual (run_xemonitor start|stop|status)
-for b in run_xemonitor run_xemonitor.sh stop_xemonitor.sh status_xemonitor.sh; do
+# Entrypoints do paradigma atual (run_xemonitor start|stop|status + autostart)
+for b in run_xemonitor run_xemonitor.sh stop_xemonitor.sh status_xemonitor.sh xemonitor-autostart; do
     [ -f "${BIN_DIR}/${b}" ] || continue
     log "removendo ${BIN_DIR}/${b}..."
     sudo_run rm -f "${BIN_DIR}/${b}"
@@ -150,7 +150,7 @@ if [ -d "${PREFIX}/share/xemonitor" ]; then
 fi
 
 # ---------- 4. regras udev / modulo uinput ----------
-for rule in 99-ch340.rules 99-xemonitor-uinput.rules; do
+for rule in 99-ch340.rules 99-xemonitor-uinput.rules 99-xemonitor-autosuspend.rules; do
     if [ -f "/etc/udev/rules.d/${rule}" ]; then
         log "removendo regra udev ${rule}..."
         sudo_run rm -f "/etc/udev/rules.d/${rule}"

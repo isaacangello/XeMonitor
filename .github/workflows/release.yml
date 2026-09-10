@@ -101,7 +101,8 @@ jobs:
           cp run_xemonitor.sh dist/entrypoint/run_xemonitor.sh
           cp stop_xemonitor.sh dist/entrypoint/stop_xemonitor.sh
           cp status_xemonitor.sh dist/entrypoint/status_xemonitor.sh
-          chmod +x dist/entrypoint/run_xemonitor dist/entrypoint/run_xemonitor.sh dist/entrypoint/stop_xemonitor.sh dist/entrypoint/status_xemonitor.sh
+          cp xemonitor-autostart dist/entrypoint/xemonitor-autostart
+          chmod +x dist/entrypoint/run_xemonitor dist/entrypoint/run_xemonitor.sh dist/entrypoint/stop_xemonitor.sh dist/entrypoint/status_xemonitor.sh dist/entrypoint/xemonitor-autostart
           tar -czf xemonitor-linux-x86_64.tar.gz -C dist xemonitor xemonitor-bridge xemonitor-gui xemonitor-uninstall xemonitor-diagnose xemonitor.png openrc systemd scripts entrypoint
           sha256sum xemonitor-linux-x86_64.tar.gz | tee xemonitor-linux-x86_64.tar.gz.sha256
 

@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.8.14] — 2026-09-10
+
+### Added
+
+- **Wrapper `xemonitor-autostart` — autostart/ícones via entrada padrão** —
+  novo script (repo root + `dist/entrypoint/`) que cria `~/.config/xemonitor`
+  e executa `run_xemonitor start` com stdout/stderr redirecionados para
+  `~/.config/xemonitor/console.log`. O `install.sh` passa a gravar
+  `autostart/xemonitor.desktop` e `share/applications/xemonitor.desktop` com
+  `Exec=${BIN_DIR}/xemonitor-autostart` (antes chamavam `xemonitor-gui`
+  direto, pulando detect_device, teste DTR/RTS, autosuspend, wait da porta e
+  rewrite da conf — e ainda subiam o GUI sem stdio válido no login, classe do
+  SIGABRT da KNOWN_ISSUES #28). `xemonitor-gui.service` (opcional) aponta para
+  o wrapper também.
+- **udev rule de autosuspend do CH340** (`99-xemonitor-autosuspend.rules`) —
+  no nível do **device USB** (`idVendor=1a86`, `idProduct=7523/55d4/55d3`):
+  `ATTR{power/control}="on"` + `ATTR{power/autosuspend_delay_ms}="-1"` +
+  `udevadm control --reload-rules && udevadm trigger`. Antes, a desativação
+  do autosuspend era só o sysfs write best-effort do `run_xemonitor.sh`
+  (root-only → sempre "Permissão negada"): o CH340 suportava autosuspend,
+  dormia e o bridge passava a ler **zero bytes** — principal candidata ao
+  ciclo "funciona → quebra" após reboot. (KNOWN_ISSUES #31)
+- **install.sh — avisos explícitos de contexto** — (1) rodar como root **sem**
+  `sudo` (`REAL_USER` vazio) cai silenciosamente em modo `system` sem
+  autostart/GUI; (2) instalar via sessão `tty`/SSH desativa o GUI
+  (`GUI_AVAILABLE=0`), o installer "sucede" mas nada sobe no login. Agora
+  ambos emitem `attention` com instruções. (KNOWN_ISSUES #32)
+- **`install.sh` bump 1.5.0 → 1.6.0** — nova regra udev de autosuspend,
+  autostart/menu via `xemonitor-autostart`, conf sempre regravada e avisos de
+  contexto (ver itens acima).
+
+### Fixed
+
+- **`run_xemonitor.sh` — `pkill` com dois padrões falha em silêncio** — as
+  linhas 146/148/306/308 usavam `pkill -TERM -x xemonitor-gui xemonitor`; o
+  procps aceita **um único padrão** (confirmado na CachyOS: `pkill: apenas um
+  padrão pode ser fornecido`, exit 2; o `|| true` escondia). Com isso o
+  `--replace` **não matava nada**. Separado em `pkill -x xemonitor-gui` +
+  `pkill -x xemonitor` (formato do `stop_xemonitor.sh`). Hoje atenuado pelo
+  `killStaleClient` do GUI (`pkill -9 -x xemonitor`, correto); em versões sem
+  isso virava injeção duplicada. (KNOWN_ISSUES #33)
+- **install.sh — conf central regravada sempre** — removido o `if
+  [ ! -f ...conf ]` que deixava `server_mode`/`bridge_path`/`client_path`
+  stale de instalação antiga (ex.: `systemd-system` quando o default virou
+  `systemd-user`). Agora `xemonitor-gui.conf` é (re)escrita de forma
+  canônica em toda instalação, no modo escolhido pelo instalador.
+
+### Docs
+
+- **KNOWN_ISSUES** — adicionadas #31 (autosuspend CH340 / udev rule), #32
+  (autostart pulava a entrada padrão) e #33 (pkill multi-pattern). Incluídos
+  na seção a seguir.
+
 ## [0.8.13] — 2026-09-10
 
 ### Fixed

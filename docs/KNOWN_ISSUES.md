@@ -344,3 +344,61 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
 - **Anti-regra**: em scripts OpenRC, **preferir `if/then/fi` explícito**
   em vez de atalhos `&&`/`||` com agrupamento `{ ... }` ou `continue`.
   OpenRC usa BusyBox ash, não bash.
+
+## 31. Linux — CH340 cai em autosuspend e o bridge lê ZERO bytes (CORRIGIDO v0.8.14)
+- **Sintoma**: o bridge funciona na instalação, mas após reboot ("work então
+  quebra") deixa de ler scans — `diagnose` mostra o device OK, driver ch341,
+  seriais abrem, mas o scanner não transmite.
+- **Causa raiz**: o CH340 (1a86:7523) suporta USB autosuspend
+  (`power/autosuspend` default "auto"; `supports_autosuspend=1`). O
+  `run_xemonitor.sh` tentava `echo on > /sys/.../power/control` como usuário
+  (root-only → "Permissão negada", mesmo com o fix de redirect da #29) e o
+  `install.sh` só instalava regra udev de `MODE=0666` no tty — **nada tocava
+  o `power/control` do device USB**. Após o device dormir, o driver não
+  acorda na leitura e o bridge fica mudo.
+- **Fix (v0.8.14)**: nova udev rule `/etc/udev/rules.d/
+  99-xemonitor-autosuspend.rules` no nível do **device USB**:
+  `ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="1a86",
+  ATTRS{idProduct}=="7523"|"55d4"|"55d3", ATTR{power/control}="on"` +
+  `ATTR{power/autosuspend_delay_ms}="-1"`, aplicada com
+  `udevadm control --reload-rules && udevadm trigger` (pega o device já
+  plugado na instalação). O sysfs write do entrypoint vira redundante.
+- **Anti-regra**: desativação de autosuspend tem de ser por **udev rule UI**
+  (root no hotplug), nunca sysfs write em script de usuário.
+- **Refs**: auditoria 2026-09-10, install.sh seção 9, run_xemonitor.sh:95-107.
+
+## 32. Linux — autostart/ícones pulavam a entrada padrão e o GUI subia sem stdio (CORRIGIDO v0.8.14)
+- **Sintoma**: após reboot, o GUI sobe via autostart do DE mas o bridge "não
+  sobe" / o comportamento diverge da sessão validada via `run_xemonitor`;
+  em alguns DE o GUI morria no login (classe da #28, stdio fechado).
+- **Causa**: `install.sh` gravava `Exec=${BIN_DIR}/xemonitor-gui` direto no
+  `~/.config/autostart/xemonitor.desktop` e no menu — **sem** detect_device,
+  teste DTR/RTS, desativação de autosuspend, wait da porta 9000, rewrite da
+  conf nem `--replace`/pkill. O entrypoint validado nunca rodava no boot.
+- **Fix (v0.8.14)**: novo wrapper `xemonitor-autostart` (instalado em
+  `/usr/local/bin` e empacotado no release/dists) cria
+  `~/.config/xemonitor` e faz `exec run_xemonitor start >>
+  ~/.config/xemonitor/console.log 2>&1`. Both autostart e menu `.desktop`
+  apontam para ele; `xemonitor-gui.service` (opcional) também.
+- **Anti-regra**: **autostart/ícones Linux SEMPRE passam pelo entrypoint**
+  (wrapper → run_xemonitor), nunca pelo binário `xemonitor-gui` direto.
+- **Bonus**: a saída do entrypoint + GUI now fica no `console.log` (stdio
+  válido, eliminando a classe de crash da #28 no login).
+- **Refs**: audit 2026-09-10, install.sh seção 12, run_xemonitor.sh.
+
+## 33. Linux — `pkill -x a b` aceita só UM padrão e falha em silêncio (CORRIGIDO v0.8.14)
+- **Sintoma**: `run_xemonitor.sh start --replace` não derrubava instâncias
+  antigas (GUI e/ou cliente continuavam rodando → possível injeção
+  duplicada), sem nenhum erro visível.
+- **Causa**: `pkill -TERM -x xemonitor-gui xemonitor` — procps-ng aceita um
+  único padrão; o segundo argumento vira erro:
+  `pkill: apenas um padrão pode ser fornecido` (exit 2), engolido pelo
+  `|| true`. Presente nas linhas 146/148/306/308 de `run_xemonitor.sh`.
+  Confirmado empiricamente na CachyOS 2026-09-10.
+- **Fix (v0.8.14)**: dois pkill separados
+  (`pkill -x xemonitor-gui` e `pkill -x xemonitor`), igual ao padrão
+  correto do `stop_xemonitor.sh`. O GUI já tinha `killStaleClient`
+  (`pkill -9 -x xemonitor`) antes do spawn — correto.
+- **Anti-regra**: **um padrão por `pkill/pgrep`**; para múltiplos nomes,
+  ou chamadas separadas ou regex única (`pkill -x 'xemonitor(-gui)?'`).
+- **Refs**: auditoria 2026-09-10, empírico `pgrep: apenas um padrão`.
