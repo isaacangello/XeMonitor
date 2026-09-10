@@ -269,6 +269,44 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
 - **Anti-regra**: nunca chamar `runSystemdStatus` ou qualquer `spawn` diretamente
   dentro do render loop; usar `refreshStatus` (throttled) ou thread de fundo.
 
+## 28. GUI Linux — abort (SIGABRT) no startup: panic printer deadlock (Zig 0.16)
+- **Sintoma**: GUI abre janela branca e morre ~77s depois; core dump `SIGABRT`
+  (UID 1000, não root). Nenhuma mensagem de panic visível. Se o GUI rodou via
+  autostart + auto_start, o `deinit` chama `stopBridge` → derruba o bridge →
+  "nada funciona".
+- **Causa raiz**: o Zig 0.16 tem um deadlock no printer de panic
+  (`debug.SelfInfo.Elf.getLoadedElf` → `Io.Threaded.Environ.scan` → mutex
+  futexWait → abort). Qualquer panic no startup (ex.: SDL init, log via
+  `std.debug.print`) aciona o printer, que trava e aborta sem mostrar a
+  mensagem original. Stack trace: `sdl.initWindow` → `Io.lockStderr` →
+  `initLockedStderr` → `Environ.scan` → `FullPanic` → `getLoadedElf` →
+  deadlock → SIGABRT.
+- **Fix (pendente)**: mover `stopBridge`/`stopClient` do `deinit` para o
+  caminho de quit explícito (crash não derruba mais o bridge); investigar
+  o panic original (rodar GUI num terminal pra capturar a mensagem antes
+  do deadlock).
+- **Diagnóstico**: `coredumpctl info <PID>` mostra `SIGABRT` com stack em
+  `Io.Threaded.Syscall.finish`. O GUI rodou como UID 1000 (não root — a
+  hipótese de "iniciado como root" está descartada).
+- **Refs**: sessão 2026-09-10, core dump PID 5588, release v0.8.12.
+
+## 29. `run_xemonitor.sh` — erro "Permissão negada" no sysfs (cosmético)
+- **Sintoma**: ao rodar `run_xemonitor.sh start`, aparece:
+  ```
+  /usr/local/bin/run_xemonitor.sh: linha 103: /sys/.../power/control: Permissão negada
+  /usr/local/bin/run_xemonitor.sh: linha 104: /sys/.../power/autosuspend_delay_ms: Permissão negada
+  ```
+  O script continua normalmente (`|| true`), mas a mensagem polui o console.
+- **Causa raiz**: `2>/dev/null` está **depois** do `>` redirect:
+  `echo "on" > /sys/.../power/control 2>/dev/null || true`
+  Bash processa redirects da esquerda pra direita — o `> /sys/.../power/control`
+  falha (Permission denied) **antes** do `2>/dev/null` ter efeito.
+- **Fix**: mover `2>/dev/null` **antes** do `>`:
+  `echo "on" 2>/dev/null > /sys/.../power/control || true`
+- **Nota**: a função `disable_usb_autosuspend` é best-effort — desabilitar
+  autosuspend requer root e o script roda como usuário. O fix é só cosmético.
+- **Refs**: sessão 2026-09-10, linhas 103-104 de `run_xemonitor.sh`.
+
 ---
 
 ## Anti-regras rápidas (resumo executivo)
@@ -288,8 +326,11 @@ necessária. Se um sintoma reaparecer, consulte primeiro esta lista.
 - **NÃO** `pkill -f` em scripts Linux (casa com o shell); usar `-x`.
 - **NÃO** usar `nohup ... > arquivo 2>&1 &` para background do bridge via
   vhci_hcd — causa dados garviodos. Usar `setsid` ou foreground.
+- **NÃO** colocar `2>/dev/null` **depois** de `>` redirect em bash — o erro de
+  permissão aparece antes do redirect ter efeito. Colocar `2>/dev/null` **antes**
+  do `>` ou usar `{ cmd > file; } 2>/dev/null`.
 
-## 12. OpenRC init — sintaxe compacta POSIX quebra em BusyBox ash (CORRIGIDO)
+## 30. OpenRC init — sintaxe compacta POSIX quebra em BusyBox ash (CORRIGIDO)
 - **Sintoma**: `rc-service xemonitor-bridge start` falha com
   `line 53: syntax error: unexpected "done" (expecting "fi")` no Alpine
   WSL durante o build do miniroot.

@@ -612,8 +612,8 @@ const App = struct {
 
     fn deinit(self: *App) void {
         stopHistoryWorker(self);
-        stopBridge(self);
-        stopClient(self);
+        // stopBridge/stopClient NÃO ficam aqui — crash/panic não deve
+        // derrubar o bridge. Só no quit explícito (ver final de main).
         for (self.log_lines.items) |ll| self.gpa.free(ll.line);
         self.log_lines.deinit(self.gpa);
         for (self.scans.items) |s| {
@@ -2025,5 +2025,8 @@ var window_open = true;
     }
 
     saveConfig(app.gpa, app.io, app.config_path, &app.cfg);
+    // Parar bridge e cliente SOMENTE no quit explícito (não em crash/panic).
+    stopBridge(&app);
+    stopClient(&app);
     return 0;
 }

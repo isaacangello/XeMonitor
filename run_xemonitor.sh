@@ -100,8 +100,8 @@ disable_usb_autosuspend() {
     local usb_dev
     usb_dev=$(dirname "$(dirname "/sys$syspath")")
     if [ -f "$usb_dev/power/control" ]; then
-        echo "on" > "$usb_dev/power/control"              2>/dev/null || true
-        echo "-1" > "$usb_dev/power/autosuspend_delay_ms" 2>/dev/null || true
+        echo "on" 2>/dev/null > "$usb_dev/power/control"              || true
+        echo "-1" 2>/dev/null > "$usb_dev/power/autosuspend_delay_ms" || true
         echo "[INFO] USB autosuspend desabilitado em $usb_dev"
     fi
 }

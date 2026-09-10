@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.8.13] — 2026-09-10
+
+### Fixed
+
+- **GUI Linux — crash não derruba mais o bridge** — `stopBridge`/`stopClient`
+  removidos do `deinit` (chamado em panic/unwind) e movidos para o final de
+  `main` (só roda no quit explícito). Antes, um SIGABRT do GUI derrubava o
+  bridge junto via `deinit` → `stopBridge`. Agora o bridge sobrevive a crashes
+  do GUI. (KNOWN_ISSUES #28)
+- **`run_xemonitor.sh` — erro "Permissão negada" suprimido** — `2>/dev/null`
+  movido antes do `>` redirect em `disable_usb_autosuspend`. Bash processa
+  redirects da esquerda pra direita; o erro aparecia antes do redirect ter
+  efeito. (KNOWN_ISSUES #29)
+
+### Docs
+
+- **KNOWN_ISSUES** — adicionadas entradas #28 (GUI abort/panic printer
+  deadlock Zig 0.16) e #29 (sysfs redirect). #12 duplicado renumerado
+  para #30. Anti-regra sobre posicionamento de `2>/dev/null` em bash.
+
 ## [0.8.12] — 2026-09-09
 
 ### Added
